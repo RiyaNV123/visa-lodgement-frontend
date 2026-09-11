@@ -1,0 +1,874 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import client, { errorMessage } from "../api/client.js";
+import AppShell from "../components/AppShell.jsx";
+import DocUploadSlot from "../components/DocUploadSlot.jsx";
+import Spinner, { PageLoader } from "../components/Spinner.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
+
+const STREAM_LABEL = { vocational: "Post Vocational 485", higher: "Post Higher 485" };
+
+// Same rounding rule the backend uses (actual_weeks in eligibility.py) --
+// shown here purely for display, so a course's own row matches the number
+// that fed into its group's total below.
+function weeksBetween(start, end) {
+  if (!start || !end) return null;
+  const ms = new Date(end) - new Date(start);
+  return Math.round(ms / (1000 * 60 * 60 * 24 * 7));
+}
+
+const DOC_SLOTS = [
+  { doc_type: "coe", label: "CoE", required: false },
+  { doc_type: "completion_letter", label: "Completion Letter", required: true },
+  { doc_type: "transcript", label: "Transcript", required: true },
+  { doc_type: "academic_certificate", label: "Academic Certificate", required: false },
+];
+
+const CASE_DOC_SLOTS = [
+  { doc_type: "current_visa", label: "Current Visa", required: true },
+  { doc_type: "afp_certificate", label: "AFP Certificate", required: false },
+  { doc_type: "afp_receipt", label: "AFP Receipt", required: false },
+  { doc_type: "pte", label: "PTE", required: true },
+  { doc_type: "ovhc", label: "OVHC", required: true },
+];
+
+// Placeholder case shown the instant the qualifications screen hands off --
+// the real case doesn't exist on the server yet (that's created in the
+// background, see the creatingCase effect below), so this is built purely
+// from what the student already entered, using the qualification's position
+// as a stand-in course id until the real one comes back.
+function buildPlaceholderCase({ payload }) {
+  return {
+    id: null,
+    student_name: payload.student_name,
+    stream: payload.stream,
+    status: "draft",
+    owner_email: null,
+    eligibility_status: "pending",
+    eligibility_reason: null,
+    total_duration_weeks: null,
+    duration_breakdown: null,
+    document_validity_status: "pending",
+    document_validity_reason: null,
+    document_validity_breakdown: null,
+    lodgement_date_status: "pending",
+    lodgement_date_reason: null,
+    lodgement_date: null,
+    lodgement_basis: null,
+    lodgement_breakdown: null,
+    courses: payload.courses.map((course, index) => ({
+      id: String(index),
+      name: course.name,
+      course_type: course.course_type,
+      start_date: null,
+      end_date: null,
+      cricos_weeks: null,
+      sort_order: course.sort_order,
+      documents: [],
+    })),
+    documents: [],
+  };
+}
+
+export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles }) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = user?.role === "admin";
+  const [caseData, setCaseData] = useState(() => (pendingCreate ? buildPlaceholderCase(pendingCreate) : null));
+  const [creatingCase, setCreatingCase] = useState(Boolean(pendingCreate));
+  const [creatingError, setCreatingError] = useState("");
+  const [loading, setLoading] = useState(!pendingCreate);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [pendingFiles, setPendingFiles] = useState(initialPendingFiles || {});
+  const [markingReviewed, setMarkingReviewed] = useState(false);
+  const [checkingEligibility, setCheckingEligibility] = useState(false);
+  // Document validity (current visa/PTE/OVHC/AFP) is a completely separate
+  // check from qualification eligibility above -- its own trigger, its own
+  // result, its own details section, never merged into one verdict.
+  const [checkingDocumentValidity, setCheckingDocumentValidity] = useState(false);
+  // Lodgement date calculation -- a third independent check. Its only
+  // dependency on the others: it only ever runs once the qualification and
+  // document validity checks are already "eligible" (see the auto-run effect
+  // and selectNewCoeDocument below).
+  const [checkingLodgementDate, setCheckingLodgementDate] = useState(false);
+  // Admins review every document on one page, always. Students no longer go
+  // through separate qualifications/additional-documents screens -- every
+  // document is collected up front on the CaseNew.jsx builder before a case
+  // even exists, so a student always lands straight on the results view.
+  // "qualifications"/"additional" remain reachable states purely so an
+  // admin's view (which ignores `step` entirely -- see showQualifications/
+  // showAdditional below) keeps working unchanged.
+  const [step] = useState("submitted"); // "qualifications" | "additional" | "submitted"
+  const caseCreationStarted = useRef(false);
+  const autoCheckStarted = useRef(false);
+  const pendingFilesRef = useRef(pendingFiles);
+  // Tracks which pendingFiles keys currently have an upload in flight, so
+  // two batches for genuinely different files (e.g. the qualifications
+  // batch and the additional-documents batch) can run concurrently without
+  // one silently swallowing the other -- only a call that targets a key
+  // that's already uploading gets skipped.
+  const inFlightKeysRef = useRef(new Set());
+
+  useEffect(() => {
+    pendingFilesRef.current = pendingFiles;
+  }, [pendingFiles]);
+
+  function fileKey(courseId, docType) {
+    return `${courseId}:${docType}`;
+  }
+
+  function attachFile(key, file) {
+    if (!["application/pdf", "image/jpeg", "image/png"].includes(file.type)) {
+      setActionError("Only PDF, JPG, or PNG files are allowed.");
+      return false;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setActionError("File exceeds the 15MB limit.");
+      return false;
+    }
+    setActionError("");
+    setPendingFiles((current) => ({ ...current, [key]: file }));
+    return true;
+  }
+
+  function detachFile(key) {
+    setPendingFiles((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function selectPendingFile(courseId, docType, event) {
+    const file = event.target.files?.[0];
+    if (file) attachFile(fileKey(courseId, docType), file);
+  }
+
+  function removePendingFile(courseId, docType) {
+    detachFile(fileKey(courseId, docType));
+  }
+
+  function selectCaseDocument(docType, event) {
+    const file = event.target.files?.[0];
+    if (file) attachFile(`case:${docType}`, file);
+  }
+
+  function removeCaseDocument(docType) {
+    detachFile(`case:${docType}`);
+  }
+
+  // New CoE lives in its own section (alongside the lodgement date result,
+  // not the Additional Documents screen) with no "N ready to save" bar of
+  // its own, so selecting a file uploads it immediately instead of waiting
+  // for a separate save action. There's no "Recheck Lodgement Date" button
+  // anymore (every check runs on its own), so this is also the only trigger
+  // that re-runs the lodgement calculation after a New CoE is added -- only
+  // if the other two checks are already eligible, matching the same gate the
+  // auto-run chain enforces.
+  async function selectNewCoeDocument(event) {
+    const file = event.target.files?.[0];
+    if (file && attachFile("case:new_coe", file)) {
+      await uploadFiles({ "case:new_coe": file });
+      if (caseData?.eligibility_status === "eligible" && caseData?.document_validity_status === "eligible") {
+        checkLodgementDate();
+      }
+    }
+  }
+
+  // Re-fetches the case WITHOUT the page-level loading flag, so the page
+  // never blanks out to a spinner while this runs -- unlike `load` below,
+  // which is only for the very first mount fetch.
+  const refreshCaseData = useCallback(
+    (idOverride) => {
+      const id = idOverride ?? caseData?.id;
+      if (!id) return Promise.resolve();
+      return client
+        .get(`/cases/${id}`)
+        .then((res) => setCaseData(res.data))
+        .catch(() => {});
+    },
+    [caseData?.id]
+  );
+
+  // Uploads a given set of files entirely in the background, all at once --
+  // no spinner, no "Saving..." label anywhere, and no one-at-a-time trickle
+  // either: every file in the batch fires together, and badges flip from
+  // Ready to Uploaded as a group once the whole batch settles. Never awaited
+  // by a caller that's about to move the student on, so it never blocks or
+  // delays anything else in the UI. `overrides` lets the just-created-case
+  // codepath pass the fresh case id straight through instead of waiting on
+  // state to settle. Only files not already mid-upload (from some other,
+  // concurrently-running batch) are actually sent -- e.g. the qualifications
+  // batch and the additional-documents batch can be in flight at the same
+  // time without one dropping the other, since they never touch the same
+  // keys; a call that's entirely made up of already-in-flight keys is a
+  // no-op rather than re-sending duplicates.
+  async function uploadFiles(filesMap, overrides = {}) {
+    const uploads = Object.entries(filesMap).filter(([key]) => !inFlightKeysRef.current.has(key));
+    if (!uploads.length) return;
+    const effectiveCaseId = overrides.caseId ?? caseData?.id;
+    if (!effectiveCaseId) return;
+    uploads.forEach(([key]) => inFlightKeysRef.current.add(key));
+    setActionError("");
+    try {
+      const results = await Promise.allSettled(
+        uploads.map(([key, file]) => {
+          const [scope, docType] = key.split(":");
+          const isCaseDoc = scope === "case";
+          const form = new FormData();
+          form.append("doc_type", docType);
+          form.append("file", file);
+          const url = isCaseDoc
+            ? `/cases/${effectiveCaseId}/documents`
+            : `/cases/${effectiveCaseId}/courses/${scope}/documents`;
+          return client.post(url, form, { headers: { "Content-Type": "multipart/form-data" } }).then(() => key);
+        })
+      );
+      const succeededKeys = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const failures = results.filter((r) => r.status === "rejected");
+      if (succeededKeys.length) {
+        setPendingFiles((current) => {
+          const next = { ...current };
+          succeededKeys.forEach((key) => delete next[key]);
+          return next;
+        });
+      }
+      // One refresh for the whole batch, once everything has settled --
+      // covers both the succeeded uploads (their badges flip to Uploaded)
+      // and gives failures a fresh case to retry against.
+      await refreshCaseData(effectiveCaseId);
+      if (failures.length) {
+        setActionError(errorMessage(failures[0].reason, "Could not save one or more documents. Please try again."));
+      }
+    } finally {
+      uploads.forEach(([key]) => inFlightKeysRef.current.delete(key));
+    }
+  }
+
+  // Creates the case itself in the background -- the slow part is the same
+  // Sheets round-trip that used to block the qualifications screen, but now
+  // it happens while the student is already looking at, and can act on, this
+  // fully-rendered screen. Re-keys any pending files from their placeholder
+  // (position-based) course id to the real one once the case (and its real
+  // course ids) exist, then kicks off their upload.
+  async function createCase() {
+    setCreatingError("");
+    try {
+      const { payload, existingCaseId } = pendingCreate;
+      const res = existingCaseId
+        ? await client.put(`/cases/${existingCaseId}/replace`, payload)
+        : await client.post("/cases", payload);
+      adoptCreatedCase(res.data);
+    } catch (err) {
+      if (err?.response?.status === 409) {
+        // We've already created this exact case -- most likely this is a
+        // second attempt (e.g. the student reloaded the page) landing after
+        // the first one already succeeded in the background. Recover by
+        // adopting whatever case now exists instead of leaving the student
+        // stuck on an error that retrying can never get past.
+        try {
+          const existing = await client.get("/cases");
+          const ownCase = existing.data[0];
+          if (ownCase) {
+            const full = await client.get(`/cases/${ownCase.id}`);
+            adoptCreatedCase(full.data);
+            return;
+          }
+        } catch {
+          // fall through to the generic error below
+        }
+      }
+      setCreatingError(errorMessage(err, "Could not create your case — please try again."));
+    }
+  }
+
+  // Shared by both the normal create/replace success path and the
+  // DUPLICATE_CASE recovery path above: re-keys any pending files from
+  // their placeholder (position-based) course id to the real one now that
+  // the case (and its real course ids) exist, then kicks off their upload.
+  function adoptCreatedCase(created) {
+    const indexToRealId = {};
+    created.courses.forEach((course, index) => {
+      indexToRealId[String(index)] = String(course.id);
+    });
+    const rekeyed = {};
+    Object.entries(pendingFilesRef.current).forEach(([key, file]) => {
+      const [scope, docType] = key.split(":");
+      const newScope = scope === "case" ? "case" : indexToRealId[scope] ?? scope;
+      rekeyed[`${newScope}:${docType}`] = file;
+    });
+
+    setCaseData(created);
+    setPendingFiles(rekeyed);
+    setCreatingCase(false);
+    if (Object.keys(rekeyed).length) {
+      uploadFiles(rekeyed, { caseId: created.id });
+    }
+  }
+
+  useEffect(() => {
+    if (!pendingCreate || caseCreationStarted.current) return;
+    caseCreationStarted.current = true;
+    createCase();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCreate]);
+
+  // Triggers the backend's duration/CRICOS calculation for this case, and
+  // stores the result (eligibility_status, eligibility_reason,
+  // total_duration_weeks) both in the Sheet and in this page's state --
+  // whoever clicks this first is the one whose click actually runs it;
+  // anyone viewing the case afterward just reads the stored result.
+  async function checkEligibility() {
+    // The case itself may still be getting created in the background (see
+    // createCase above) -- caseData.id stays null (a placeholder) until that
+    // finishes. A student who moves through the screens quickly can reach
+    // this button before it resolves; without this guard the request goes
+    // to the literal URL "/cases/null/calculate", which the backend rejects
+    // with a confusing raw validation error instead of a real answer.
+    if (!caseData?.id) {
+      setActionError("Your case is still being created — please wait a moment and try again.");
+      return;
+    }
+    setCheckingEligibility(true);
+    setActionError("");
+    try {
+      const res = await client.post(`/cases/${caseData.id}/calculate`);
+      // All three breakdowns are persisted server-side and always come back
+      // together in every response (see detail_response in cases_router.py),
+      // so there's nothing to merge in from the prior state here.
+      setCaseData(res.data);
+      return res.data; // lets the auto-check chain below react to the real outcome, not stale state
+    } catch (requestError) {
+      setActionError(errorMessage(requestError, "Could not check eligibility. Please try again."));
+      return null;
+    } finally {
+      setCheckingEligibility(false);
+    }
+  }
+
+  // Triggers the backend's document validity check (current visa/PTE/OVHC/
+  // AFP) -- a completely separate result from qualification eligibility
+  // above, with its own status/reason/breakdown, never combined into one
+  // verdict. Same "whoever clicks first" semantics as checkEligibility.
+  async function checkDocumentValidity() {
+    if (!caseData?.id) {
+      setActionError("Your case is still being created — please wait a moment and try again.");
+      return;
+    }
+    setCheckingDocumentValidity(true);
+    setActionError("");
+    try {
+      const res = await client.post(`/cases/${caseData.id}/validate-documents`);
+      setCaseData(res.data);
+      return res.data;
+    } catch (requestError) {
+      setActionError(errorMessage(requestError, "Could not check document validity. Please try again."));
+      return null;
+    } finally {
+      setCheckingDocumentValidity(false);
+    }
+  }
+
+  // Triggers the lodgement date calculation -- a third check, still with its
+  // own status/reason/breakdown, not combined with the other two into one
+  // verdict. Confirmed rule: a lodgement date is meaningless unless BOTH the
+  // qualification check and the document validity check are already
+  // "eligible" -- the button stays disabled until then (see the JSX below),
+  // so this never even gets called prematurely, but the backend enforces
+  // the same rule regardless.
+  async function checkLodgementDate() {
+    if (!caseData?.id) {
+      setActionError("Your case is still being created — please wait a moment and try again.");
+      return;
+    }
+    setCheckingLodgementDate(true);
+    setActionError("");
+    try {
+      const res = await client.post(`/cases/${caseData.id}/calculate-lodgement-date`);
+      setCaseData(res.data);
+      return res.data;
+    } catch (requestError) {
+      setActionError(errorMessage(requestError, "Could not calculate the lodgement date. Please try again."));
+      return null;
+    } finally {
+      setCheckingLodgementDate(false);
+    }
+  }
+
+  async function markReviewed() {
+    setMarkingReviewed(true);
+    setActionError("");
+    try {
+      await client.post(`/cases/${caseData.id}/review`);
+      navigate("/cases");
+    } catch (requestError) {
+      setActionError(errorMessage(requestError, "Could not mark this case as reviewed. Please try again."));
+      setMarkingReviewed(false);
+    }
+  }
+
+  // Runs each check automatically the moment its own calculation-details
+  // breakdown isn't there yet to show -- no need to click "Check
+  // Eligibility" etc. manually. A breakdown is persisted (see
+  // duration_breakdown_json etc. in cases_router.py) the moment its check
+  // actually runs, so once it exists, a later page load just displays it
+  // without recomputing anything. This also self-heals a case that was
+  // checked before this persistence existed (status/reason stored, but no
+  // breakdown yet) -- its first load under this code backfills the missing
+  // breakdown instead of leaving it permanently blank. Fires exactly once
+  // per mount (autoCheckStarted), and follows the same sequential gate the
+  // backend itself enforces: document validity only runs once qualification
+  // is eligible, and lodgement date only runs once both of those are.
+  useEffect(() => {
+    if (isAdmin || !caseData?.id || autoCheckStarted.current) return;
+    // "pending" keeps retrying on every visit (a genuine, possibly-fixable
+    // data gap -- e.g. a document the student hasn't added yet); "eligible"
+    // and "not_eligible" are final verdicts that only need a run once, to
+    // produce the breakdown that then just gets displayed from then on.
+    const needsEligibility = !caseData.duration_breakdown || caseData.eligibility_status === "pending";
+    const needsDocumentValidity = !caseData.document_validity_breakdown || caseData.document_validity_status === "pending";
+    const needsLodgement = !caseData.lodgement_breakdown || caseData.lodgement_date_status === "pending";
+    if (!needsEligibility && !needsDocumentValidity && !needsLodgement) return;
+    autoCheckStarted.current = true;
+    // Each of these is always safe to call even when an earlier one isn't
+    // eligible -- the endpoint itself checks the gate first (cheaply, before
+    // any real extraction/CRICOS work) and records the correct blocked
+    // status and reason on the case, rather than the frontend needing to
+    // guess and stay silent. Cascades forward whenever an earlier stage just
+    // ran, since that could have changed the picture for the later ones.
+    (async () => {
+      if (needsEligibility) await checkEligibility();
+      if (needsDocumentValidity || needsEligibility) await checkDocumentValidity();
+      if (needsLodgement || needsDocumentValidity || needsEligibility) await checkLodgementDate();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, caseData?.id]);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    client
+      .get(`/cases/${caseId}`)
+      .then((res) => setCaseData(res.data))
+      .catch(() => setLoadError("Could not load case"))
+      .finally(() => setLoading(false));
+  }, [caseId]);
+
+  useEffect(() => {
+    if (pendingCreate) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load]);
+
+  if (loading) {
+    return (
+      <AppShell>
+        <PageLoader label="Loading case…" />
+      </AppShell>
+    );
+  }
+
+  if (loadError || !caseData) {
+    return (
+      <AppShell>
+        <p className="rounded-lg bg-[#fde8e8] px-4 py-3 text-sm font-medium text-[#b42318]">
+          {loadError || "Case not found"}
+        </p>
+      </AppShell>
+    );
+  }
+
+  const showQualifications = isAdmin || step === "qualifications";
+  const showAdditional = isAdmin || step === "additional";
+  const showSubmitted = !isAdmin && step === "submitted";
+
+  return (
+    <AppShell>
+      <div className="mx-auto max-w-6xl space-y-8">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="font-headline text-4xl font-bold tracking-tight text-[#002d48]">
+              {caseData.student_name}
+            </h1>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="rounded-full bg-[#eaf1fb] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#004384]">
+                {STREAM_LABEL[caseData.stream]}
+              </span>
+              {isAdmin && caseData.owner_email && (
+                <span className="text-xs text-[#72777e]">{caseData.owner_email}</span>
+              )}
+              {isAdmin && caseData.status === "reviewed" && (
+                <span className="rounded-full bg-[#dff3e3] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#126b2f]">
+                  Reviewed
+                </span>
+              )}
+            </div>
+          </div>
+          {!isAdmin && (
+            <button
+              type="button"
+              onClick={() => navigate("/case?changeStream=true")}
+              className="rounded-lg border border-[#c2c7ce] bg-white px-4 py-2 text-xs font-bold text-[#002d48] shadow-sm hover:bg-[#f4f3f1]"
+            >
+              Change stream / start again
+            </button>
+          )}
+          {isAdmin && caseData.status !== "reviewed" && (
+            <button
+              type="button"
+              disabled={markingReviewed}
+              onClick={markReviewed}
+              className="flex items-center gap-2 rounded-lg bg-[#002d48] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#004384] disabled:opacity-50"
+            >
+              {markingReviewed && <Spinner className="border-white/30 border-t-white" />}
+              {markingReviewed ? "Saving…" : "Done — mark as reviewed"}
+            </button>
+          )}
+          {isAdmin && caseData.status === "reviewed" && (
+            <button
+              type="button"
+              onClick={() => navigate("/cases")}
+              className="rounded-lg border border-[#c2c7ce] bg-white px-4 py-2 text-xs font-bold text-[#002d48] shadow-sm hover:bg-[#f4f3f1]"
+            >
+              Back to All Cases
+            </button>
+          )}
+        </div>
+
+        {creatingError && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[#fde8e8] px-4 py-3 text-sm font-medium text-[#b42318]">
+            <span>{creatingError}</span>
+            <button
+              type="button"
+              onClick={createCase}
+              className="shrink-0 rounded-lg border border-[#b42318]/40 bg-white px-3 py-1.5 text-xs font-bold text-[#b42318] shadow-sm hover:bg-[#fde8e8]"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {actionError && <p className="rounded-lg bg-[#fde8e8] px-4 py-3 text-sm font-medium text-[#b42318]">{actionError}</p>}
+
+        {showQualifications && (
+          <>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {caseData.courses.map((course) => (
+                <div key={course.id} className="rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                  <div className="flex items-center justify-between">
+                    <p className="text-lg font-bold font-headline text-[#002d48]">{course.name}</p>
+                    <span className="rounded-full bg-[#f4f3f1] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#5f6670]">
+                      {course.course_type}
+                    </span>
+                  </div>
+                  {(course.start_date || course.end_date || course.cricos_weeks != null) && (
+                    <p className="mt-1 text-xs text-[#72777e]">
+                      {course.start_date || "—"} to {course.end_date || "—"}
+                      {course.cricos_weeks != null && ` · CRICOS ${course.cricos_weeks} weeks`}
+                    </p>
+                  )}
+
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {DOC_SLOTS.map((slot) => (
+                      <DocUploadSlot
+                        key={slot.doc_type}
+                        label={slot.label}
+                        required={slot.required}
+                        document={course.documents.find((d) => d.doc_type === slot.doc_type)}
+                        pendingFile={pendingFiles[fileKey(course.id, slot.doc_type)]}
+                        onSelectFile={(event) => selectPendingFile(course.id, slot.doc_type, event)}
+                        onRemovePendingFile={() => removePendingFile(course.id, slot.doc_type)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {showAdditional && (
+          <div className="rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+            <p className="text-lg font-bold font-headline text-[#002d48]">Additional Documents</p>
+            <p className="mt-1 text-xs text-[#72777e]">
+              A current AFP Certificate or AFP Receipt is fine — you don't need both.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {CASE_DOC_SLOTS.map((slot) => (
+                <DocUploadSlot
+                  key={slot.doc_type}
+                  label={slot.label}
+                  required={slot.required}
+                  document={caseData.documents.find((d) => d.doc_type === slot.doc_type)}
+                  pendingFile={pendingFiles[`case:${slot.doc_type}`]}
+                  onSelectFile={(event) => selectCaseDocument(slot.doc_type, event)}
+                  onRemovePendingFile={() => removeCaseDocument(slot.doc_type)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {showSubmitted && (
+          <div>
+            <p className="font-headline text-2xl font-bold text-[#002d48]">You're all set</p>
+            {checkingEligibility || checkingDocumentValidity || checkingLodgementDate ? (
+              <p className="mt-2 flex items-center gap-2 text-sm font-bold text-[#2d5fa1]">
+                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#2d5fa1] border-t-transparent" />
+                Your results are on their way — this can take up to a minute.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm font-medium text-[#42474d]">
+                Your documents have been submitted, and every check below runs automatically.
+              </p>
+            )}
+
+            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+              {/* Column 1: Qualification check */}
+              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
+
+                <div
+                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                    caseData.eligibility_status === "eligible"
+                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                      : caseData.eligibility_status === "not_eligible"
+                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                  }`}
+                >
+                  {caseData.eligibility_status === "eligible" && (
+                    <p>
+                      Meets the required study duration.
+                      {isAdmin && caseData.total_duration_weeks != null && ` (${caseData.total_duration_weeks} credited weeks)`}
+                    </p>
+                  )}
+                  {caseData.eligibility_status === "not_eligible" && (
+                    <p>Not eligible.{caseData.eligibility_reason && ` ${caseData.eligibility_reason}`}</p>
+                  )}
+                  {caseData.eligibility_status === "pending" && (
+                    <p>
+                      {caseData.eligibility_reason
+                        ? `Couldn't fully check eligibility yet: ${caseData.eligibility_reason}`
+                        : "Eligibility hasn't been checked yet."}
+                    </p>
+                  )}
+                </div>
+
+                {checkingEligibility && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
+
+                {caseData.duration_breakdown && (
+                  <div className="mt-4 space-y-4">
+                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
+                        Dates extracted from documents
+                      </p>
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="w-full min-w-[420px] text-left text-xs">
+                          <thead>
+                            <tr className="text-[#72777e]">
+                              <th className="pb-1 pr-2 font-semibold">Course</th>
+                              <th className="pb-1 pr-2 font-semibold">Start</th>
+                              <th className="pb-1 pr-2 font-semibold">End</th>
+                              <th className="pb-1 pr-2 font-semibold">Actual wks</th>
+                              <th className="pb-1 font-semibold">CRICOS wks</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-[#1a1c1a]">
+                            {caseData.courses.map((course) => (
+                              <tr key={course.id} className="border-t border-[#c2c7ce]/40">
+                                <td className="py-1.5 pr-2">{course.name}</td>
+                                <td className="py-1.5 pr-2">{course.start_date || "—"}</td>
+                                <td className="py-1.5 pr-2">{course.end_date || "—"}</td>
+                                <td className="py-1.5 pr-2">{weeksBetween(course.start_date, course.end_date) ?? "—"}</td>
+                                <td className="py-1.5">{course.cricos_weeks ?? "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Credited weeks</p>
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="w-full min-w-[420px] text-left text-xs">
+                          <thead>
+                            <tr className="text-[#72777e]">
+                              <th className="pb-1 pr-2 font-semibold">Group</th>
+                              <th className="pb-1 pr-2 font-semibold">Actual</th>
+                              <th className="pb-1 pr-2 font-semibold">CRICOS</th>
+                              <th className="pb-1 font-semibold">Credited</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-[#1a1c1a]">
+                            {caseData.duration_breakdown.groups.map((group) => (
+                              <tr key={group.label} className="border-t border-[#c2c7ce]/40">
+                                <td className="py-1.5 pr-2">{group.label}</td>
+                                <td className="py-1.5 pr-2">{group.actual_weeks}</td>
+                                <td className="py-1.5 pr-2">{group.required_weeks ?? "—"}</td>
+                                <td className="py-1.5">{group.credited_weeks}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg bg-[#f4f3f1] px-3 py-2 text-xs font-medium text-[#42474d]">
+                      Total: <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.total_weeks}</span> wks
+                      {" "}/ Min required:{" "}
+                      <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Column 2: Document validity check -- only meaningful once
+                  the qualification check is eligible (see the disabled
+                  button below and the backend's own gate). */}
+              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
+
+                <div
+                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                    caseData.document_validity_status === "eligible"
+                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                      : caseData.document_validity_status === "not_eligible"
+                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                  }`}
+                >
+                  {caseData.document_validity_status === "eligible" && <p>Current Visa, PTE, OVHC, and AFP are all valid.</p>}
+                  {caseData.document_validity_status === "not_eligible" && (
+                    <p>Not valid.{caseData.document_validity_reason && ` ${caseData.document_validity_reason}`}</p>
+                  )}
+                  {caseData.document_validity_status === "pending" && (
+                    <p>
+                      {caseData.document_validity_reason
+                        ? `Couldn't fully check document validity yet: ${caseData.document_validity_reason}`
+                        : "Document validity hasn't been checked yet."}
+                    </p>
+                  )}
+                </div>
+
+                {checkingDocumentValidity && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
+
+                {caseData.document_validity_breakdown && (
+                  <div className="mt-4">
+                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full min-w-[420px] text-left text-xs">
+                        <thead>
+                          <tr className="text-[#72777e]">
+                            <th className="pb-1 pr-2 font-semibold">Document</th>
+                            <th className="pb-1 font-semibold">Extracted</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-[#1a1c1a]">
+                          {caseData.document_validity_breakdown.checks.map((check) => (
+                            <tr key={check.label} className="border-t border-[#c2c7ce]/40">
+                              <td className="py-1.5 pr-2">{check.label}</td>
+                              <td className="py-1.5">
+                                {Object.keys(check.extracted).length
+                                  ? Object.entries(check.extracted)
+                                      .map(([key, value]) => `${key.replace(/_/g, " ")}: ${value}`)
+                                      .join(", ")
+                                  : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Column 3: Lodgement date calculation -- meaningless unless
+                  BOTH the other two checks are eligible (a lodgement date
+                  for someone who doesn't qualify, or whose documents aren't
+                  currently valid, means nothing). */}
+              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
+
+                <div className="mt-3">
+                  <DocUploadSlot
+                    label="New CoE"
+                    required={false}
+                    document={caseData.documents.find((d) => d.doc_type === "new_coe")}
+                    pendingFile={pendingFiles["case:new_coe"]}
+                    onSelectFile={selectNewCoeDocument}
+                    onRemovePendingFile={() => removeCaseDocument("new_coe")}
+                  />
+                </div>
+
+                <div
+                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                    caseData.lodgement_date_status === "eligible"
+                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                      : caseData.lodgement_date_status === "not_eligible"
+                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                  }`}
+                >
+                  {caseData.lodgement_date_status === "eligible" && (
+                    <p>
+                      Lodgement date: {caseData.lodgement_date}.
+                      {caseData.lodgement_basis && ` ${caseData.lodgement_basis}.`}
+                    </p>
+                  )}
+                  {caseData.lodgement_date_status === "not_eligible" && (
+                    <p>Not eligible to lodge.{caseData.lodgement_date_reason && ` ${caseData.lodgement_date_reason}`}</p>
+                  )}
+                  {caseData.lodgement_date_status === "pending" && (
+                    <p>
+                      {caseData.lodgement_date_reason
+                        ? `Couldn't calculate the lodgement date yet: ${caseData.lodgement_date_reason}`
+                        : "Lodgement date hasn't been calculated yet."}
+                    </p>
+                  )}
+                </div>
+
+                {checkingLodgementDate && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
+
+                {caseData.lodgement_breakdown && (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                    <p className="text-xs text-[#42474d]">
+                      Latest completion date:{" "}
+                      <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.latest_completion_date || "—"}</span>.
+                      {" "}Window ends:{" "}
+                      <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.window_end || "—"}</span>.
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[420px] text-left text-xs">
+                        <thead>
+                          <tr className="text-[#72777e]">
+                            <th className="pb-1 pr-2 font-semibold">Factor</th>
+                            <th className="pb-1 pr-2 font-semibold">Date</th>
+                            <th className="pb-1 font-semibold">Considered?</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-[#1a1c1a]">
+                          {caseData.lodgement_breakdown.factors.map((factor) => (
+                            <tr key={factor.label} className="border-t border-[#c2c7ce]/40">
+                              <td className="py-1.5 pr-2">{factor.label}</td>
+                              <td className="py-1.5 pr-2">{factor.date || "—"}</td>
+                              <td className="py-1.5">{factor.included ? "Yes" : "Excluded"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}

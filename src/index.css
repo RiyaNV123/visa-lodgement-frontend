@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-label: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background-color: #faf9f6;
+  color: #1a1c1a;
+  font-family: var(--font-body);
+}
+
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+}
+
+.scrollbar-minimal {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 45, 72, 0.25) transparent;
+}
+.scrollbar-minimal::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+.scrollbar-minimal::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 45, 72, 0.25);
+  border-radius: 9999px;
+}
