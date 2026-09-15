@@ -8,6 +8,38 @@ import { useAuth } from "../context/AuthContext.jsx";
 
 const STREAM_LABEL = { vocational: "Post Vocational 485", higher: "Post Higher 485" };
 
+// Shown, one at a time, inside any column that hasn't resolved yet -- purely
+// to keep a waiting student engaged, not tied to real backend progress (the
+// columns themselves already reveal each real result the instant it's
+// ready, independently of this).
+const LOADING_MESSAGES = [
+  "Great things take a moment — thanks for your patience.",
+  "Your 485 journey is almost at the next step.",
+  "We're making sure everything checks out, just for you.",
+  "Good news is worth the wait.",
+];
+const LOADING_MESSAGE_INTERVAL_MS = 4500;
+
+// One shared panel covering whichever column(s) haven't resolved yet -- not
+// three separate per-column loaders. Checks always resolve left-to-right
+// (qualification, then document validity, then lodgement date), so the
+// still-loading columns are always a contiguous trailing block; this panel
+// takes their place in the grid (via `span`) and shrinks as each one
+// finishes and reveals its own real card instead, right next to it.
+function SharedLoadingPanel({ span, messageIndex }) {
+  const spanClass = span === 3 ? "lg:col-span-3" : span === 2 ? "lg:col-span-2" : "lg:col-span-1";
+  return (
+    <div
+      className={`flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-[#c2c7ce]/40 bg-white/60 p-10 text-center backdrop-blur-sm ${spanClass}`}
+    >
+      <span className="h-7 w-7 animate-spin rounded-full border-2 border-[#2d5fa1] border-t-transparent" />
+      <p key={messageIndex} className="animate-message-fade mt-4 max-w-[260px] text-sm font-medium text-[#42474d]">
+        {LOADING_MESSAGES[messageIndex]}
+      </p>
+    </div>
+  );
+}
+
 // Same rounding rule the backend uses (actual_weeks in eligibility.py) --
 // shown here purely for display, so a course's own row matches the number
 // that fed into its group's total below.
@@ -92,6 +124,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // document validity checks are already "eligible" (see the auto-run effect
   // and selectNewCoeDocument below).
   const [checkingLodgementDate, setCheckingLodgementDate] = useState(false);
+  const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   // Admins review every document on one page, always. Students no longer go
   // through separate qualifications/additional-documents screens -- every
   // document is collected up front on the CaseNew.jsx builder before a case
@@ -102,6 +135,32 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   const [step] = useState("submitted"); // "qualifications" | "additional" | "submitted"
   const caseCreationStarted = useRef(false);
   const autoCheckStarted = useRef(false);
+
+  // Each column is "loading" independently -- while its own check is
+  // actively in flight, or while it's genuinely never been checked yet (see
+  // the same "pending status with no reason at all" signal the auto-run
+  // effect below uses). A column that's already resolved to a real
+  // verdict -- including a gated "pending" with an actual reason -- is not
+  // loading, even while a *later* column still is.
+  const eligibilityLoading = checkingEligibility || (caseData?.eligibility_status === "pending" && !caseData?.eligibility_reason);
+  const documentValidityLoading = checkingDocumentValidity || (caseData?.document_validity_status === "pending" && !caseData?.document_validity_reason);
+  const lodgementLoading = checkingLodgementDate || (caseData?.lodgement_date_status === "pending" && !caseData?.lodgement_date_reason);
+  const anyColumnLoading = eligibilityLoading || documentValidityLoading || lodgementLoading;
+  // How many trailing columns still need the shared loader -- always a
+  // contiguous count from the right, since a later check never resolves
+  // before an earlier one starts (see the auto-run effect below).
+  const loadingSpan = [eligibilityLoading, documentValidityLoading, lodgementLoading].filter(Boolean).length;
+
+  // Cycles the engaging loading message every few seconds, only while at
+  // least one column actually needs it -- purely to keep a waiting student
+  // company, not tied to real progress (see LOADING_MESSAGES above).
+  useEffect(() => {
+    if (!anyColumnLoading) return;
+    const interval = setInterval(() => {
+      setLoadingMessageIndex((current) => (current + 1) % LOADING_MESSAGES.length);
+    }, LOADING_MESSAGE_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [anyColumnLoading]);
   const pendingFilesRef = useRef(pendingFiles);
   // Tracks which pendingFiles keys currently have an upload in flight, so
   // two batches for genuinely different files (e.g. the qualifications
@@ -611,189 +670,189 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
         {showSubmitted && (
           <div>
             <p className="font-headline text-2xl font-bold text-[#002d48]">You're all set</p>
-            {checkingEligibility || checkingDocumentValidity || checkingLodgementDate ? (
-              <p className="mt-2 flex items-center gap-2 text-sm font-bold text-[#2d5fa1]">
-                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#2d5fa1] border-t-transparent" />
-                Your results are on their way — this can take up to a minute.
-              </p>
-            ) : (
-              <p className="mt-2 text-sm font-medium text-[#42474d]">
-                Your documents have been submitted, and every check below runs automatically.
-              </p>
-            )}
+            <p className="mt-2 text-sm font-medium text-[#42474d]">
+              Your documents have been submitted, and every check below runs automatically.
+            </p>
 
             <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-              {/* Column 1: Qualification check */}
-              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
+              {/* Column 1: Qualification check -- only rendered once it has
+                  resolved; while loading, the shared panel below takes its
+                  place instead of a per-column loader. */}
+              {!eligibilityLoading && (
+                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
+                  <>
+                    <div
+                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                        caseData.eligibility_status === "eligible"
+                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                          : caseData.eligibility_status === "not_eligible"
+                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                      }`}
+                    >
+                      {caseData.eligibility_status === "eligible" && (
+                        <p>
+                          Meets the required study duration.
+                          {isAdmin && caseData.total_duration_weeks != null && ` (${caseData.total_duration_weeks} credited weeks)`}
+                        </p>
+                      )}
+                      {caseData.eligibility_status === "not_eligible" && (
+                        <p>Not eligible.{caseData.eligibility_reason && ` ${caseData.eligibility_reason}`}</p>
+                      )}
+                      {caseData.eligibility_status === "pending" && (
+                        <p>
+                          {caseData.eligibility_reason
+                            ? `Couldn't fully check eligibility yet: ${caseData.eligibility_reason}`
+                            : "Eligibility hasn't been checked yet."}
+                        </p>
+                      )}
+                    </div>
 
-                <div
-                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                    caseData.eligibility_status === "eligible"
-                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                      : caseData.eligibility_status === "not_eligible"
-                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                  }`}
-                >
-                  {caseData.eligibility_status === "eligible" && (
-                    <p>
-                      Meets the required study duration.
-                      {isAdmin && caseData.total_duration_weeks != null && ` (${caseData.total_duration_weeks} credited weeks)`}
-                    </p>
-                  )}
-                  {caseData.eligibility_status === "not_eligible" && (
-                    <p>Not eligible.{caseData.eligibility_reason && ` ${caseData.eligibility_reason}`}</p>
-                  )}
-                  {caseData.eligibility_status === "pending" && (
-                    <p>
-                      {caseData.eligibility_reason
-                        ? `Couldn't fully check eligibility yet: ${caseData.eligibility_reason}`
-                        : "Eligibility hasn't been checked yet."}
-                    </p>
-                  )}
+                    {caseData.duration_breakdown && (
+                      <div className="mt-4 space-y-4">
+                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
+                            Dates extracted from documents
+                          </p>
+                          <div className="mt-2 overflow-x-auto">
+                            <table className="w-full min-w-[420px] text-left text-xs">
+                              <thead>
+                                <tr className="text-[#72777e]">
+                                  <th className="pb-1 pr-2 font-semibold">Course</th>
+                                  <th className="pb-1 pr-2 font-semibold">Start</th>
+                                  <th className="pb-1 pr-2 font-semibold">End</th>
+                                  <th className="pb-1 pr-2 font-semibold">Actual wks</th>
+                                  <th className="pb-1 font-semibold">CRICOS wks</th>
+                                </tr>
+                              </thead>
+                              <tbody className="text-[#1a1c1a]">
+                                {caseData.courses.map((course) => (
+                                  <tr key={course.id} className="border-t border-[#c2c7ce]/40">
+                                    <td className="py-1.5 pr-2">{course.name}</td>
+                                    <td className="py-1.5 pr-2">{course.start_date || "—"}</td>
+                                    <td className="py-1.5 pr-2">{course.end_date || "—"}</td>
+                                    <td className="py-1.5 pr-2">{weeksBetween(course.start_date, course.end_date) ?? "—"}</td>
+                                    <td className="py-1.5">{course.cricos_weeks ?? "—"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Credited weeks</p>
+                          <div className="mt-2 overflow-x-auto">
+                            <table className="w-full min-w-[420px] text-left text-xs">
+                              <thead>
+                                <tr className="text-[#72777e]">
+                                  <th className="pb-1 pr-2 font-semibold">Group</th>
+                                  <th className="pb-1 pr-2 font-semibold">Actual</th>
+                                  <th className="pb-1 pr-2 font-semibold">CRICOS</th>
+                                  <th className="pb-1 font-semibold">Credited</th>
+                                </tr>
+                              </thead>
+                              <tbody className="text-[#1a1c1a]">
+                                {caseData.duration_breakdown.groups.map((group) => (
+                                  <tr key={group.label} className="border-t border-[#c2c7ce]/40">
+                                    <td className="py-1.5 pr-2">{group.label}</td>
+                                    <td className="py-1.5 pr-2">{group.actual_weeks}</td>
+                                    <td className="py-1.5 pr-2">{group.required_weeks ?? "—"}</td>
+                                    <td className="py-1.5">{group.credited_weeks}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg bg-[#f4f3f1] px-3 py-2 text-xs font-medium text-[#42474d]">
+                          Total: <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.total_weeks}</span> wks
+                          {" "}/ Min required:{" "}
+                          <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
+                        </div>
+                      </div>
+                    )}
+                  </>
                 </div>
-
-                {checkingEligibility && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
-
-                {caseData.duration_breakdown && (
-                  <div className="mt-4 space-y-4">
-                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-
-                    <div>
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
-                        Dates extracted from documents
-                      </p>
-                      <div className="mt-2 overflow-x-auto">
-                        <table className="w-full min-w-[420px] text-left text-xs">
-                          <thead>
-                            <tr className="text-[#72777e]">
-                              <th className="pb-1 pr-2 font-semibold">Course</th>
-                              <th className="pb-1 pr-2 font-semibold">Start</th>
-                              <th className="pb-1 pr-2 font-semibold">End</th>
-                              <th className="pb-1 pr-2 font-semibold">Actual wks</th>
-                              <th className="pb-1 font-semibold">CRICOS wks</th>
-                            </tr>
-                          </thead>
-                          <tbody className="text-[#1a1c1a]">
-                            {caseData.courses.map((course) => (
-                              <tr key={course.id} className="border-t border-[#c2c7ce]/40">
-                                <td className="py-1.5 pr-2">{course.name}</td>
-                                <td className="py-1.5 pr-2">{course.start_date || "—"}</td>
-                                <td className="py-1.5 pr-2">{course.end_date || "—"}</td>
-                                <td className="py-1.5 pr-2">{weeksBetween(course.start_date, course.end_date) ?? "—"}</td>
-                                <td className="py-1.5">{course.cricos_weeks ?? "—"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <div>
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Credited weeks</p>
-                      <div className="mt-2 overflow-x-auto">
-                        <table className="w-full min-w-[420px] text-left text-xs">
-                          <thead>
-                            <tr className="text-[#72777e]">
-                              <th className="pb-1 pr-2 font-semibold">Group</th>
-                              <th className="pb-1 pr-2 font-semibold">Actual</th>
-                              <th className="pb-1 pr-2 font-semibold">CRICOS</th>
-                              <th className="pb-1 font-semibold">Credited</th>
-                            </tr>
-                          </thead>
-                          <tbody className="text-[#1a1c1a]">
-                            {caseData.duration_breakdown.groups.map((group) => (
-                              <tr key={group.label} className="border-t border-[#c2c7ce]/40">
-                                <td className="py-1.5 pr-2">{group.label}</td>
-                                <td className="py-1.5 pr-2">{group.actual_weeks}</td>
-                                <td className="py-1.5 pr-2">{group.required_weeks ?? "—"}</td>
-                                <td className="py-1.5">{group.credited_weeks}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg bg-[#f4f3f1] px-3 py-2 text-xs font-medium text-[#42474d]">
-                      Total: <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.total_weeks}</span> wks
-                      {" "}/ Min required:{" "}
-                      <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
-                    </div>
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* Column 2: Document validity check -- only meaningful once
                   the qualification check is eligible (see the disabled
-                  button below and the backend's own gate). */}
-              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
-
-                <div
-                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                    caseData.document_validity_status === "eligible"
-                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                      : caseData.document_validity_status === "not_eligible"
-                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                  }`}
-                >
-                  {caseData.document_validity_status === "eligible" && <p>Current Visa, PTE, OVHC, and AFP are all valid.</p>}
-                  {caseData.document_validity_status === "not_eligible" && (
-                    <p>Not valid.{caseData.document_validity_reason && ` ${caseData.document_validity_reason}`}</p>
-                  )}
-                  {caseData.document_validity_status === "pending" && (
-                    <p>
-                      {caseData.document_validity_reason
-                        ? `Couldn't fully check document validity yet: ${caseData.document_validity_reason}`
-                        : "Document validity hasn't been checked yet."}
-                    </p>
-                  )}
-                </div>
-
-                {checkingDocumentValidity && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
-
-                {caseData.document_validity_breakdown && (
-                  <div className="mt-4">
-                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-                    <div className="mt-3 overflow-x-auto">
-                      <table className="w-full min-w-[420px] text-left text-xs">
-                        <thead>
-                          <tr className="text-[#72777e]">
-                            <th className="pb-1 pr-2 font-semibold">Document</th>
-                            <th className="pb-1 font-semibold">Extracted</th>
-                          </tr>
-                        </thead>
-                        <tbody className="text-[#1a1c1a]">
-                          {caseData.document_validity_breakdown.checks.map((check) => (
-                            <tr key={check.label} className="border-t border-[#c2c7ce]/40">
-                              <td className="py-1.5 pr-2">{check.label}</td>
-                              <td className="py-1.5">
-                                {Object.keys(check.extracted).length
-                                  ? Object.entries(check.extracted)
-                                      .map(([key, value]) => `${key.replace(/_/g, " ")}: ${value}`)
-                                      .join(", ")
-                                  : "—"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                  button below and the backend's own gate); only rendered
+                  once resolved, same reasoning as Column 1. */}
+              {!documentValidityLoading && (
+                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
+                  <>
+                    <div
+                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                        caseData.document_validity_status === "eligible"
+                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                          : caseData.document_validity_status === "not_eligible"
+                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                      }`}
+                    >
+                      {caseData.document_validity_status === "eligible" && <p>Current Visa, PTE, OVHC, and AFP are all valid.</p>}
+                      {caseData.document_validity_status === "not_eligible" && (
+                        <p>Not valid.{caseData.document_validity_reason && ` ${caseData.document_validity_reason}`}</p>
+                      )}
+                      {caseData.document_validity_status === "pending" && (
+                        <p>
+                          {caseData.document_validity_reason
+                            ? `Couldn't fully check document validity yet: ${caseData.document_validity_reason}`
+                            : "Document validity hasn't been checked yet."}
+                        </p>
+                      )}
                     </div>
-                  </div>
-                )}
-              </div>
+
+                    {caseData.document_validity_breakdown && (
+                      <div className="mt-4">
+                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                        <div className="mt-3 overflow-x-auto">
+                          <table className="w-full min-w-[420px] text-left text-xs">
+                            <thead>
+                              <tr className="text-[#72777e]">
+                                <th className="pb-1 pr-2 font-semibold">Document</th>
+                                <th className="pb-1 font-semibold">Extracted</th>
+                              </tr>
+                            </thead>
+                            <tbody className="text-[#1a1c1a]">
+                              {caseData.document_validity_breakdown.checks.map((check) => (
+                                <tr key={check.label} className="border-t border-[#c2c7ce]/40">
+                                  <td className="py-1.5 pr-2">{check.label}</td>
+                                  <td className="py-1.5">
+                                    {Object.keys(check.extracted).length
+                                      ? Object.entries(check.extracted)
+                                          .map(([key, value]) => `${key.replace(/_/g, " ")}: ${value}`)
+                                          .join(", ")
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                </div>
+              )}
 
               {/* Column 3: Lodgement date calculation -- meaningless unless
                   BOTH the other two checks are eligible (a lodgement date
                   for someone who doesn't qualify, or whose documents aren't
-                  currently valid, means nothing). */}
-              <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
+                  currently valid, means nothing); only rendered once
+                  resolved, same reasoning as the other two columns. */}
+              {!lodgementLoading && (
+                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
 
-                <div className="mt-3">
+                  <div className="mt-3">
                   <DocUploadSlot
                     label="New CoE"
                     required={false}
@@ -804,67 +863,69 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                   />
                 </div>
 
-                <div
-                  className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                    caseData.lodgement_date_status === "eligible"
-                      ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                      : caseData.lodgement_date_status === "not_eligible"
-                      ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                      : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                  }`}
-                >
-                  {caseData.lodgement_date_status === "eligible" && (
-                    <p>
-                      Lodgement date: {caseData.lodgement_date}.
-                      {caseData.lodgement_basis && ` ${caseData.lodgement_basis}.`}
-                    </p>
-                  )}
-                  {caseData.lodgement_date_status === "not_eligible" && (
-                    <p>Not eligible to lodge.{caseData.lodgement_date_reason && ` ${caseData.lodgement_date_reason}`}</p>
-                  )}
-                  {caseData.lodgement_date_status === "pending" && (
-                    <p>
-                      {caseData.lodgement_date_reason
-                        ? `Couldn't calculate the lodgement date yet: ${caseData.lodgement_date_reason}`
-                        : "Lodgement date hasn't been calculated yet."}
-                    </p>
-                  )}
-                </div>
-
-                {checkingLodgementDate && <p className="mt-2 text-xs font-medium text-[#72777e]">Checking…</p>}
-
-                {caseData.lodgement_breakdown && (
-                  <div className="mt-4 space-y-3">
-                    <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-                    <p className="text-xs text-[#42474d]">
-                      Latest completion date:{" "}
-                      <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.latest_completion_date || "—"}</span>.
-                      {" "}Window ends:{" "}
-                      <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.window_end || "—"}</span>.
-                    </p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[420px] text-left text-xs">
-                        <thead>
-                          <tr className="text-[#72777e]">
-                            <th className="pb-1 pr-2 font-semibold">Factor</th>
-                            <th className="pb-1 pr-2 font-semibold">Date</th>
-                            <th className="pb-1 font-semibold">Considered?</th>
-                          </tr>
-                        </thead>
-                        <tbody className="text-[#1a1c1a]">
-                          {caseData.lodgement_breakdown.factors.map((factor) => (
-                            <tr key={factor.label} className="border-t border-[#c2c7ce]/40">
-                              <td className="py-1.5 pr-2">{factor.label}</td>
-                              <td className="py-1.5 pr-2">{factor.date || "—"}</td>
-                              <td className="py-1.5">{factor.included ? "Yes" : "Excluded"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                <>
+                    <div
+                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
+                        caseData.lodgement_date_status === "eligible"
+                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
+                          : caseData.lodgement_date_status === "not_eligible"
+                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
+                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
+                      }`}
+                    >
+                      {caseData.lodgement_date_status === "eligible" && (
+                        <p>
+                          Lodgement date: {caseData.lodgement_date}.
+                          {caseData.lodgement_basis && ` ${caseData.lodgement_basis}.`}
+                        </p>
+                      )}
+                      {caseData.lodgement_date_status === "not_eligible" && (
+                        <p>Not eligible to lodge.{caseData.lodgement_date_reason && ` ${caseData.lodgement_date_reason}`}</p>
+                      )}
+                      {caseData.lodgement_date_status === "pending" && (
+                        <p>
+                          {caseData.lodgement_date_reason
+                            ? `Couldn't calculate the lodgement date yet: ${caseData.lodgement_date_reason}`
+                            : "Lodgement date hasn't been calculated yet."}
+                        </p>
+                      )}
                     </div>
-                  </div>
-                )}
+
+                    {caseData.lodgement_breakdown && (
+                      <div className="mt-4 space-y-3">
+                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                        <p className="text-xs text-[#42474d]">
+                          Latest completion date:{" "}
+                          <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.latest_completion_date || "—"}</span>.
+                          {" "}Window ends:{" "}
+                          <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.window_end || "—"}</span>.
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[420px] text-left text-xs">
+                            <thead>
+                              <tr className="text-[#72777e]">
+                                <th className="pb-1 pr-2 font-semibold">Factor</th>
+                                <th className="pb-1 pr-2 font-semibold">Date</th>
+                                <th className="pb-1 font-semibold">Considered?</th>
+                              </tr>
+                            </thead>
+                            <tbody className="text-[#1a1c1a]">
+                              {caseData.lodgement_breakdown.factors.map((factor) => (
+                                <tr key={factor.label} className="border-t border-[#c2c7ce]/40">
+                                  <td className="py-1.5 pr-2">{factor.label}</td>
+                                  <td className="py-1.5 pr-2">{factor.date || "—"}</td>
+                                  <td className="py-1.5">{factor.included ? "Yes" : "Excluded"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
               </div>
+              )}
+              {anyColumnLoading && <SharedLoadingPanel span={loadingSpan} messageIndex={loadingMessageIndex} />}
             </div>
           </div>
         )}

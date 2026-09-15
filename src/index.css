@@ -40,3 +40,17 @@ body {
   background-color: rgba(0, 45, 72, 0.25);
   border-radius: 9999px;
 }
+
+@keyframes message-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-message-fade {
+  animation: message-fade 0.4s ease-out;
+}
