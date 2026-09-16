@@ -1,4 +1,5 @@
 import { useState } from "react";
+import client from "../api/client.js";
 import AppShell from "../components/AppShell.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -49,6 +50,7 @@ function emptyCaseFiles() {
 
 const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_BYTES = 15 * 1024 * 1024;
+const EXTENSION_FOR_TYPE = { "application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png" };
 
 function validateFile(file) {
   if (!ALLOWED_TYPES.includes(file.type)) return "Only PDF, JPG, or PNG files are allowed";
@@ -56,11 +58,53 @@ function validateFile(file) {
   return null;
 }
 
+// Runs the same extraction a real upload always did, but against bytes that
+// are never saved anywhere (see POST /cases/extract-preview) -- so the
+// student can see what was found the instant they attach a file, well
+// before Save. A failure here just means nothing to show yet; it's not
+// surfaced as an error since the document itself is still perfectly fine to
+// submit -- an admin can always fill in a gap later, same as today.
+async function extractPreview(docType, file) {
+  try {
+    const form = new FormData();
+    form.append("doc_type", docType);
+    form.append("file", file);
+    const res = await client.post("/cases/extract-preview", form, { headers: { "Content-Type": "multipart/form-data" } });
+    return res.data;
+  } catch {
+    return {}; // resolved, just nothing found -- distinct from "still pending" (undefined)
+  }
+}
+
+// A short, human-readable summary of whatever extract-preview found for
+// this document -- deliberately only mentions fields that are actually
+// present, since a miss here isn't an error (see extractPreview above).
+function describeExtracted(extracted) {
+  if (!extracted) return null;
+  const parts = [];
+  if (extracted.start_date && extracted.end_date) parts.push(`${extracted.start_date} → ${extracted.end_date}`);
+  else if (extracted.start_date) parts.push(`Starts ${extracted.start_date}`);
+  else if (extracted.end_date) parts.push(`Ends ${extracted.end_date}`);
+  if (extracted.cricos_code) parts.push(`CRICOS ${extracted.cricos_code}${extracted.cricos_weeks != null ? ` (${extracted.cricos_weeks} wks)` : ""}`);
+  if (extracted.visa_subclass || extracted.visa_length_of_stay_date) {
+    parts.push(`Subclass ${extracted.visa_subclass || "?"}, valid to ${extracted.visa_length_of_stay_date || "?"}`);
+  }
+  if (extracted.pte_valid_until_date) parts.push(`Valid until ${extracted.pte_valid_until_date}`);
+  if (extracted.ovhc_relevant_date) parts.push(`Policy start ${extracted.ovhc_relevant_date}`);
+  if (extracted.afp_issue_date) parts.push(`Issued ${extracted.afp_issue_date}`);
+  if (extracted.new_coe_start_date) parts.push(`Starts ${extracted.new_coe_start_date}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function emptyDraft(stream = "vocational") {
   const streamDefinition = STREAMS.find((item) => item.value === stream);
   return {
     courseType: streamDefinition.courseTypes[0],
     files: { coe: null, completion_letter: null, transcript: null, academic_certificate: null },
+    // Keyed the same as files; a key absent/undefined means "not yet
+    // resolved" (still extracting or nothing picked), an empty object means
+    // "resolved, nothing found" -- see describeExtracted/extractPreview.
+    extracted: {},
   };
 }
 
@@ -74,13 +118,15 @@ function buildLabels(qualifications) {
   });
 }
 
-function DocPickerField({ field, file, error, onPick, onRemove }) {
+function DocPickerField({ field, file, extracting, extracted, error, onPick, onRemove }) {
   function previewFile() {
     if (!file) return;
     const url = URL.createObjectURL(file);
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
+
+  const extractedSummary = describeExtracted(extracted);
 
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-[#c2c7ce]/60 px-4 py-3">
@@ -94,6 +140,8 @@ function DocPickerField({ field, file, error, onPick, onRemove }) {
         ) : (
           <p className="text-xs text-[#72777e]">{field.required ? "Required" : "Optional"}</p>
         )}
+        {file && extracting && <p className="text-xs text-[#72777e]">Reading document…</p>}
+        {file && !extracting && extractedSummary && <p className="truncate text-xs text-[#126b2f]">{extractedSummary}</p>}
         {error && <p className="text-xs text-[#b42318]">{error}</p>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -138,6 +186,9 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
   // document error or an unnecessary re-upload prompt.
   const collectCaseDocs = !existingCaseId;
   const [caseFiles, setCaseFiles] = useState(() => emptyCaseFiles());
+  // Same "absent = still pending, {} = resolved but nothing found" shape as
+  // a qualification's draft.extracted.
+  const [caseExtracted, setCaseExtracted] = useState({});
   const [caseFieldErrors, setCaseFieldErrors] = useState({});
   const [mode, setMode] = useState("list"); // "list" | "form" | "preview"
   const [draft, setDraft] = useState(emptyDraft());
@@ -153,7 +204,7 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
 
   function startEdit(index) {
     const qualification = qualifications[index];
-    setDraft({ ...qualification, files: { ...qualification.files } });
+    setDraft({ ...qualification, files: { ...qualification.files }, extracted: { ...(qualification.extracted || {}) } });
     setFieldErrors({});
     setEditingIndex(index);
     setMode("form");
@@ -174,11 +225,24 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
     const err = validateFile(file);
     setFieldErrors((prev) => ({ ...prev, [key]: err || undefined }));
     if (err) return;
-    setDraft((prev) => ({ ...prev, files: { ...prev.files, [key]: file } }));
+    setDraft((prev) => {
+      const { [key]: _drop, ...restExtracted } = prev.extracted;
+      return { ...prev, files: { ...prev.files, [key]: file }, extracted: restExtracted };
+    });
+    // Fired the instant the file is attached -- not gated on Preview/Save.
+    // Guarded against the file having since been removed/replaced (editing
+    // a different qualification, or swapping this exact slot) by checking
+    // it's still the same File reference when this resolves.
+    extractPreview(key, file).then((result) => {
+      setDraft((prev) => (prev.files[key] === file ? { ...prev, extracted: { ...prev.extracted, [key]: result } } : prev));
+    });
   }
 
   function removeFile(key) {
-    setDraft((prev) => ({ ...prev, files: { ...prev.files, [key]: null } }));
+    setDraft((prev) => {
+      const { [key]: _drop, ...restExtracted } = prev.extracted;
+      return { ...prev, files: { ...prev.files, [key]: null }, extracted: restExtracted };
+    });
     setFieldErrors((prev) => ({ ...prev, [key]: undefined }));
   }
 
@@ -189,10 +253,24 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
     setCaseFieldErrors((prev) => ({ ...prev, [key]: err || undefined }));
     if (err) return;
     setCaseFiles((prev) => ({ ...prev, [key]: file }));
+    setCaseExtracted((prev) => {
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+    extractPreview(key, file).then((result) => {
+      setCaseFiles((current) => {
+        if (current[key] === file) setCaseExtracted((prev) => ({ ...prev, [key]: result }));
+        return current;
+      });
+    });
   }
 
   function removeCaseFile(key) {
     setCaseFiles((prev) => ({ ...prev, [key]: null }));
+    setCaseExtracted((prev) => {
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
     setCaseFieldErrors((prev) => ({ ...prev, [key]: undefined }));
   }
 
@@ -209,24 +287,29 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
   }
 
   // Neither creating the case nor uploading its documents happens here --
-  // both are the slow part (a real Google Sheets + Drive round-trip each),
-  // and making the student sit through them before they can even see the
-  // next screen is exactly the wait we're removing. Package up everything
-  // the next screen needs and hand off immediately; it creates the case and
-  // uploads the files in the background while already fully interactive.
-  // Qualifications don't have real course ids yet, so pending files are
-  // keyed by their position instead -- the next screen re-keys them by real
-  // course id once the case actually exists. Case-level files use the same
-  // "case:<doc_type>" key the next screen already understands.
+  // both are the slow part (a real Google Sheets round-trip each), and
+  // making the student sit through them before they can even see the next
+  // screen is exactly the wait we're removing. Package up everything the
+  // next screen needs and hand off immediately; it creates the case (and
+  // uploads the files' actual bytes) in the background while already fully
+  // interactive. Qualifications don't have real course ids yet, so pending
+  // files are keyed by their position instead -- the next screen re-keys
+  // them by real document id once the case actually exists. Case-level
+  // files use the same "case:<doc_type>" key the next screen already
+  // understands.
+  //
+  // A brand-new case (no existingCaseId) goes through create-full: every
+  // qualification/case document has already been extracted (see
+  // extractPreview above, fired the instant each file was attached), so
+  // the whole case -- dates, CRICOS code/weeks, visa/PTE/OVHC/AFP fields,
+  // and every document's metadata -- gets created in ONE batched call
+  // instead of the old one-Sheets-write-per-document drip (see
+  // create_case_full in cases_router.py for why that matters). Changing
+  // stream on an EXISTING case still goes through the old replace flow
+  // unchanged for now -- narrower, less common, and not worth the added
+  // risk of also rewriting PUT /cases/{id}/replace in the same pass.
   function handleSubmit() {
     const labels = buildLabels(qualifications);
-    const courses = qualifications.map((q, i) => ({
-      name: labels[i],
-      course_type: q.courseType,
-      sort_order: i,
-    }));
-    const payload = { student_name: user.full_name, stream, courses };
-
     const pendingFiles = {};
     qualifications.forEach((q, i) => {
       DOC_FIELDS.forEach((field) => {
@@ -241,7 +324,58 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
       });
     }
 
-    onCreated?.({ payload, existingCaseId }, pendingFiles);
+    if (existingCaseId) {
+      const courses = qualifications.map((q, i) => ({ name: labels[i], course_type: q.courseType, sort_order: i }));
+      const payload = { student_name: user.full_name, stream, courses };
+      onCreated?.({ payload, isFull: false, existingCaseId }, pendingFiles);
+      return;
+    }
+
+    const courses = qualifications.map((q, i) => {
+      const cl = q.extracted?.completion_letter || {};
+      const coe = q.extracted?.coe || {};
+      const documents = DOC_FIELDS.filter((field) => q.files[field.key]).map((field) => ({
+        doc_type: field.key,
+        file_name: `${labels[i]} - ${field.label}${EXTENSION_FOR_TYPE[q.files[field.key].type] || ""}`,
+        mime_type: q.files[field.key].type,
+      }));
+      return {
+        name: labels[i],
+        course_type: q.courseType,
+        start_date: cl.start_date || null,
+        end_date: cl.end_date || null,
+        cricos_code: coe.cricos_code || null,
+        cricos_weeks: coe.cricos_weeks ?? null,
+        sort_order: i,
+        documents,
+      };
+    });
+
+    const caseDocuments = CASE_DOC_FIELDS.filter((field) => caseFiles[field.key]).map((field) => ({
+      doc_type: field.key,
+      file_name: `${field.label}${EXTENSION_FOR_TYPE[caseFiles[field.key].type] || ""}`,
+      mime_type: caseFiles[field.key].type,
+    }));
+    const visa = caseExtracted.current_visa || {};
+    const pte = caseExtracted.pte || {};
+    const ovhc = caseExtracted.ovhc || {};
+    const afp = caseExtracted.afp_certificate || {};
+    const afpReceipt = caseExtracted.afp_receipt || {};
+    const newCoe = caseExtracted.new_coe || {};
+
+    const payload = {
+      student_name: user.full_name,
+      stream,
+      courses,
+      case_documents: caseDocuments,
+      visa_subclass: visa.visa_subclass || null,
+      visa_length_of_stay_date: visa.visa_length_of_stay_date || null,
+      pte_valid_until_date: pte.pte_valid_until_date || null,
+      ovhc_relevant_date: ovhc.ovhc_relevant_date || null,
+      afp_issue_date: afp.afp_issue_date || afpReceipt.afp_issue_date || null,
+      new_coe_start_date: newCoe.new_coe_start_date || null,
+    };
+    onCreated?.({ payload, isFull: true, existingCaseId: null }, pendingFiles);
   }
 
   const allowedCourseTypes = STREAMS.find((item) => item.value === stream).courseTypes;
@@ -276,6 +410,8 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
                   key={field.key}
                   field={field}
                   file={draft.files[field.key]}
+                  extracting={Boolean(draft.files[field.key]) && draft.extracted[field.key] === undefined}
+                  extracted={draft.extracted[field.key]}
                   error={fieldErrors[field.key]}
                   onPick={(e) => pickFile(field.key, e)}
                   onRemove={() => removeFile(field.key)}
@@ -508,6 +644,8 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
                   key={field.key}
                   field={field}
                   file={caseFiles[field.key]}
+                  extracting={Boolean(caseFiles[field.key]) && caseExtracted[field.key] === undefined}
+                  extracted={caseExtracted[field.key]}
                   error={caseFieldErrors[field.key]}
                   onPick={(e) => pickCaseFile(field.key, e)}
                   onRemove={() => removeCaseFile(field.key)}

@@ -306,16 +306,60 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     }
   }
 
+  // Uploads a document's already-known bytes to S3 using the document id
+  // create_case_full just created -- pure S3, zero Sheets calls per file
+  // (see PUT /cases/{id}/documents/{id}/content), unlike uploadFiles above.
+  // Same background/non-blocking/batched shape as uploadFiles, just against
+  // documents that already exist instead of ones still needing to be
+  // created.
+  async function uploadDocumentContents(filesByDocumentId, caseId) {
+    const uploads = Object.entries(filesByDocumentId).filter(([key]) => !inFlightKeysRef.current.has(key));
+    if (!uploads.length) return;
+    uploads.forEach(([key]) => inFlightKeysRef.current.add(key));
+    setActionError("");
+    try {
+      const results = await Promise.allSettled(
+        uploads.map(([documentId, file]) => {
+          const form = new FormData();
+          form.append("file", file);
+          return client.put(`/cases/${caseId}/documents/${documentId}/content`, form, { headers: { "Content-Type": "multipart/form-data" } }).then(() => documentId);
+        })
+      );
+      const succeededKeys = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const failures = results.filter((r) => r.status === "rejected");
+      if (succeededKeys.length) {
+        setPendingFiles((current) => {
+          const next = { ...current };
+          succeededKeys.forEach((key) => delete next[key]);
+          return next;
+        });
+      }
+      await refreshCaseData(caseId);
+      if (failures.length) {
+        setActionError(errorMessage(failures[0].reason, "Could not save one or more documents. Please try again."));
+      }
+    } finally {
+      uploads.forEach(([key]) => inFlightKeysRef.current.delete(key));
+    }
+  }
+
   // Creates the case itself in the background -- the slow part is the same
   // Sheets round-trip that used to block the qualifications screen, but now
   // it happens while the student is already looking at, and can act on, this
-  // fully-rendered screen. Re-keys any pending files from their placeholder
-  // (position-based) course id to the real one once the case (and its real
-  // course ids) exist, then kicks off their upload.
+  // fully-rendered screen. A brand-new case (isFull) goes through
+  // create-full -- one batched call creates the case, every course, and
+  // every document's metadata together (see create_case_full in
+  // cases_router.py); changing stream on an existing case still goes
+  // through the older replace flow, unchanged.
   async function createCase() {
     setCreatingError("");
+    const { payload, existingCaseId, isFull } = pendingCreate;
     try {
-      const { payload, existingCaseId } = pendingCreate;
+      if (isFull) {
+        const res = await client.post("/cases/create-full", payload);
+        adoptFullyCreatedCase(res.data, payload);
+        return;
+      }
       const res = existingCaseId
         ? await client.put(`/cases/${existingCaseId}/replace`, payload)
         : await client.post("/cases", payload);
@@ -326,13 +370,23 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
         // second attempt (e.g. the student reloaded the page) landing after
         // the first one already succeeded in the background. Recover by
         // adopting whatever case now exists instead of leaving the student
-        // stuck on an error that retrying can never get past.
+        // stuck on an error that retrying can never get past. For the
+        // isFull path there's no reliable way to re-match this attempt's
+        // pending files against the earlier attempt's already-created
+        // document ids, so this just shows the case as it already is --
+        // the earlier attempt's documents are already there.
         try {
           const existing = await client.get("/cases");
           const ownCase = existing.data[0];
           if (ownCase) {
             const full = await client.get(`/cases/${ownCase.id}`);
-            adoptCreatedCase(full.data);
+            if (isFull) {
+              setCaseData(full.data);
+              setPendingFiles({});
+              setCreatingCase(false);
+            } else {
+              adoptCreatedCase(full.data);
+            }
             return;
           }
         } catch {
@@ -364,6 +418,41 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     setCreatingCase(false);
     if (Object.keys(rekeyed).length) {
       uploadFiles(rekeyed, { caseId: created.id });
+    }
+  }
+
+  // create-full already created every document's metadata (see
+  // create_case_full in cases_router.py) -- this just needs to match each
+  // pending file to the document id it was created as, then upload its
+  // actual bytes. The match is positional: `sentPayload` and `created` both
+  // list courses/documents in the exact same order (neither side reorders
+  // or filters differently), so zipping sentPayload's manifest against
+  // created's real ids is exact, not a guess.
+  function adoptFullyCreatedCase(created, sentPayload) {
+    const documentIdByPendingKey = {};
+    sentPayload.courses.forEach((course, i) => {
+      const createdCourse = created.courses[i];
+      course.documents.forEach((doc, j) => {
+        const createdDoc = createdCourse?.documents?.[j];
+        if (createdDoc) documentIdByPendingKey[`${i}:${doc.doc_type}`] = createdDoc.id;
+      });
+    });
+    (sentPayload.case_documents || []).forEach((doc, j) => {
+      const createdDoc = created.documents?.[j];
+      if (createdDoc) documentIdByPendingKey[`case:${doc.doc_type}`] = createdDoc.id;
+    });
+
+    const rekeyed = {};
+    Object.entries(pendingFilesRef.current).forEach(([key, file]) => {
+      const documentId = documentIdByPendingKey[key];
+      if (documentId != null) rekeyed[documentId] = file;
+    });
+
+    setCaseData(created);
+    setPendingFiles(rekeyed);
+    setCreatingCase(false);
+    if (Object.keys(rekeyed).length) {
+      uploadDocumentContents(rekeyed, created.id);
     }
   }
 
