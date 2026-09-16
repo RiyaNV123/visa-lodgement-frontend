@@ -222,15 +222,16 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // its own, so selecting a file uploads it immediately instead of waiting
   // for a separate save action. There's no "Recheck Lodgement Date" button
   // anymore (every check runs on its own), so this is also the only trigger
-  // that re-runs the lodgement calculation after a New CoE is added -- only
-  // if the other two checks are already eligible, matching the same gate the
-  // auto-run chain enforces.
+  // that re-runs the checks after a New CoE is added -- only if the other
+  // two are already eligible, matching the same gate runChecks enforces
+  // server-side. Stages 1/2 recompute quickly (nothing new to re-extract),
+  // stage 3 picks up the fresh new_coe_start_date.
   async function selectNewCoeDocument(event) {
     const file = event.target.files?.[0];
     if (file && attachFile("case:new_coe", file)) {
       await uploadFiles({ "case:new_coe": file });
       if (caseData?.eligibility_status === "eligible" && caseData?.document_validity_status === "eligible") {
-        checkLodgementDate();
+        runChecks();
       }
     }
   }
@@ -373,84 +374,42 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCreate]);
 
-  // Triggers the backend's duration/CRICOS calculation for this case, and
-  // stores the result (eligibility_status, eligibility_reason,
-  // total_duration_weeks) both in the Sheet and in this page's state --
-  // whoever clicks this first is the one whose click actually runs it;
-  // anyone viewing the case afterward just reads the stored result.
-  async function checkEligibility() {
+  // Triggers all three cascading checks (qualification/CRICOS duration,
+  // document validity, lodgement date) in one backend call -- the backend
+  // runs them in order and short-circuits exactly as before (document
+  // validity only computed once qualification is eligible, lodgement date
+  // only once both are), it just no longer costs three separate round trips
+  // to do it: see run_checks in cases_router.py. Whoever triggers this
+  // first is the one whose call actually runs it; anyone viewing the case
+  // afterward just reads the stored result.
+  async function runChecks() {
     // The case itself may still be getting created in the background (see
     // createCase above) -- caseData.id stays null (a placeholder) until that
     // finishes. A student who moves through the screens quickly can reach
-    // this button before it resolves; without this guard the request goes
-    // to the literal URL "/cases/null/calculate", which the backend rejects
-    // with a confusing raw validation error instead of a real answer.
+    // this before it resolves; without this guard the request goes to the
+    // literal URL "/cases/null/run-checks", which the backend rejects with a
+    // confusing raw validation error instead of a real answer.
     if (!caseData?.id) {
       setActionError("Your case is still being created — please wait a moment and try again.");
-      return;
+      return null;
     }
     setCheckingEligibility(true);
+    setCheckingDocumentValidity(true);
+    setCheckingLodgementDate(true);
     setActionError("");
     try {
-      const res = await client.post(`/cases/${caseData.id}/calculate`);
+      const res = await client.post(`/cases/${caseData.id}/run-checks`);
       // All three breakdowns are persisted server-side and always come back
       // together in every response (see detail_response in cases_router.py),
       // so there's nothing to merge in from the prior state here.
       setCaseData(res.data);
-      return res.data; // lets the auto-check chain below react to the real outcome, not stale state
+      return res.data;
     } catch (requestError) {
-      setActionError(errorMessage(requestError, "Could not check eligibility. Please try again."));
+      setActionError(errorMessage(requestError, "Could not check your results. Please try again."));
       return null;
     } finally {
       setCheckingEligibility(false);
-    }
-  }
-
-  // Triggers the backend's document validity check (current visa/PTE/OVHC/
-  // AFP) -- a completely separate result from qualification eligibility
-  // above, with its own status/reason/breakdown, never combined into one
-  // verdict. Same "whoever clicks first" semantics as checkEligibility.
-  async function checkDocumentValidity() {
-    if (!caseData?.id) {
-      setActionError("Your case is still being created — please wait a moment and try again.");
-      return;
-    }
-    setCheckingDocumentValidity(true);
-    setActionError("");
-    try {
-      const res = await client.post(`/cases/${caseData.id}/validate-documents`);
-      setCaseData(res.data);
-      return res.data;
-    } catch (requestError) {
-      setActionError(errorMessage(requestError, "Could not check document validity. Please try again."));
-      return null;
-    } finally {
       setCheckingDocumentValidity(false);
-    }
-  }
-
-  // Triggers the lodgement date calculation -- a third check, still with its
-  // own status/reason/breakdown, not combined with the other two into one
-  // verdict. Confirmed rule: a lodgement date is meaningless unless BOTH the
-  // qualification check and the document validity check are already
-  // "eligible" -- the button stays disabled until then (see the JSX below),
-  // so this never even gets called prematurely, but the backend enforces
-  // the same rule regardless.
-  async function checkLodgementDate() {
-    if (!caseData?.id) {
-      setActionError("Your case is still being created — please wait a moment and try again.");
-      return;
-    }
-    setCheckingLodgementDate(true);
-    setActionError("");
-    try {
-      const res = await client.post(`/cases/${caseData.id}/calculate-lodgement-date`);
-      setCaseData(res.data);
-      return res.data;
-    } catch (requestError) {
-      setActionError(errorMessage(requestError, "Could not calculate the lodgement date. Please try again."));
-      return null;
-    } finally {
       setCheckingLodgementDate(false);
     }
   }
@@ -467,8 +426,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     }
   }
 
-  // Runs each check automatically the moment its own calculation-details
-  // breakdown isn't there yet to show -- no need to click "Check
+  // Runs the checks automatically the moment any of their calculation-
+  // details breakdowns isn't there yet to show -- no need to click "Check
   // Eligibility" etc. manually. A breakdown is persisted (see
   // duration_breakdown_json etc. in cases_router.py) the moment its check
   // actually runs, so once it exists, a later page load just displays it
@@ -476,9 +435,9 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // checked before this persistence existed (status/reason stored, but no
   // breakdown yet) -- its first load under this code backfills the missing
   // breakdown instead of leaving it permanently blank. Fires exactly once
-  // per mount (autoCheckStarted), and follows the same sequential gate the
-  // backend itself enforces: document validity only runs once qualification
-  // is eligible, and lodgement date only runs once both of those are.
+  // per mount (autoCheckStarted); the sequential gate itself (document
+  // validity only once qualification is eligible, lodgement date only once
+  // both are) now lives entirely in the single runChecks call/endpoint.
   useEffect(() => {
     if (isAdmin || !caseData?.id || autoCheckStarted.current) return;
     // "pending" keeps retrying on every visit (a genuine, possibly-fixable
@@ -490,17 +449,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     const needsLodgement = !caseData.lodgement_breakdown || caseData.lodgement_date_status === "pending";
     if (!needsEligibility && !needsDocumentValidity && !needsLodgement) return;
     autoCheckStarted.current = true;
-    // Each of these is always safe to call even when an earlier one isn't
-    // eligible -- the endpoint itself checks the gate first (cheaply, before
-    // any real extraction/CRICOS work) and records the correct blocked
-    // status and reason on the case, rather than the frontend needing to
-    // guess and stay silent. Cascades forward whenever an earlier stage just
-    // ran, since that could have changed the picture for the later ones.
-    (async () => {
-      if (needsEligibility) await checkEligibility();
-      if (needsDocumentValidity || needsEligibility) await checkDocumentValidity();
-      if (needsLodgement || needsDocumentValidity || needsEligibility) await checkLodgementDate();
-    })();
+    runChecks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, caseData?.id]);
 
