@@ -79,15 +79,9 @@ function ReviewDocTable({ label, attached, loading, rows }) {
         <p className="mt-1 text-xs text-[#72777e]">Not attached</p>
       ) : (
         <table className="mt-2 w-full text-left text-xs">
-          <thead>
-            <tr className="text-[#72777e]">
-              <th className="pb-1 pr-2 font-semibold">Attribute</th>
-              <th className="pb-1 font-semibold">Value</th>
-            </tr>
-          </thead>
           <tbody className="text-[#1a1c1a]">
             {rows.map((row) => (
-              <tr key={row.attribute} className="border-t border-[#c2c7ce]/40">
+              <tr key={row.attribute} className="border-t border-[#c2c7ce]/40 first:border-t-0">
                 <td className="py-1.5 pr-2 text-[#72777e]">{row.attribute}</td>
                 <td className="py-1.5 font-semibold">{loading ? "Reading document…" : row.value || "Not detected"}</td>
               </tr>
@@ -149,14 +143,8 @@ function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendin
                 </span>
               </div>
               <table className="mt-3 w-full text-left text-xs">
-                <thead>
-                  <tr className="text-[#72777e]">
-                    <th className="pb-1 pr-2 font-semibold">Attribute</th>
-                    <th className="pb-1 font-semibold">Value</th>
-                  </tr>
-                </thead>
                 <tbody className="text-[#1a1c1a]">
-                  <tr className="border-t border-[#c2c7ce]/40">
+                  <tr>
                     <td className="py-1.5 pr-2 text-[#72777e]">Start Date</td>
                     <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : startDate || "Not detected"}</td>
                   </tr>
@@ -200,26 +188,26 @@ function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendin
             label="PTE"
             attached={attachedCaseDocTypes.has("pte")}
             loading={isPending("case:pte")}
-            rows={[{ attribute: "Validity", value: payload.pte_valid_until_date }]}
+            rows={[{ attribute: "Valid Date", value: payload.pte_valid_until_date }]}
           />
           <ReviewDocTable
             label="OVHC"
             attached={attachedCaseDocTypes.has("ovhc")}
             loading={isPending("case:ovhc")}
-            rows={[{ attribute: "Relevant Date", value: payload.ovhc_relevant_date }]}
+            rows={[{ attribute: "Valid Date", value: payload.ovhc_relevant_date }]}
           />
           <ReviewDocTable
             label="AFP (Certificate or Receipt)"
             attached={attachedCaseDocTypes.has("afp_certificate") || attachedCaseDocTypes.has("afp_receipt")}
             loading={isPending(afpKeyAttached)}
-            rows={[{ attribute: "Date", value: payload.afp_issue_date }]}
+            rows={[{ attribute: "Valid Date", value: payload.afp_issue_date }]}
           />
           {attachedCaseDocTypes.has("new_coe") && (
             <ReviewDocTable
               label="New CoE"
               attached
               loading={isPending("case:new_coe")}
-              rows={[{ attribute: "Start Date", value: payload.new_coe_start_date }]}
+              rows={[{ attribute: "Valid Date", value: payload.new_coe_start_date }]}
             />
           )}
         </div>
