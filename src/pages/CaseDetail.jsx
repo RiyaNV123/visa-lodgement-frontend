@@ -454,9 +454,12 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   }
 
   // Uploads a document's already-known bytes to S3 using the document id
-  // create_case_full just created -- pure S3, zero Sheets calls per file
+  // create_case_full just created -- genuinely zero Sheets calls per file
   // (see PUT /cases/{id}/documents/{id}/content), unlike uploadFiles above.
-  // Same background/non-blocking/batched shape as uploadFiles, just against
+  // Passes each document's own s3_key/mime_type (captured back in
+  // adoptFullyCreatedCase, straight from create-full's response) along with
+  // the file, so the endpoint never has to look them up itself. Same
+  // background/non-blocking/batched shape as uploadFiles, just against
   // documents that already exist instead of ones still needing to be
   // created.
   async function uploadDocumentContents(filesByDocumentId, caseId) {
@@ -466,9 +469,11 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     setActionError("");
     try {
       const results = await Promise.allSettled(
-        uploads.map(([documentId, file]) => {
+        uploads.map(([documentId, { file, s3Key, mimeType }]) => {
           const form = new FormData();
           form.append("file", file);
+          form.append("s3_key", s3Key);
+          form.append("mime_type", mimeType);
           return client.put(`/cases/${caseId}/documents/${documentId}/content`, form, { headers: { "Content-Type": "multipart/form-data" } }).then(() => documentId);
         })
       );
@@ -576,27 +581,31 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // or filters differently), so zipping sentPayload's manifest against
   // created's real ids is exact, not a guess.
   function adoptFullyCreatedCase(created, sentPayload) {
-    const documentIdByPendingKey = {};
+    // Carries each created document's own s3_key/mime_type along, keyed by
+    // its id -- uploadDocumentContents passes these straight through, so
+    // that endpoint never needs to look them up from the Sheet itself (see
+    // upload_document_content in cases_router.py).
+    const createdDocByPendingKey = {};
     sentPayload.courses.forEach((course, i) => {
       const createdCourse = created.courses[i];
       course.documents.forEach((doc, j) => {
         const createdDoc = createdCourse?.documents?.[j];
-        if (createdDoc) documentIdByPendingKey[`${i}:${doc.doc_type}`] = createdDoc.id;
+        if (createdDoc) createdDocByPendingKey[`${i}:${doc.doc_type}`] = createdDoc;
       });
     });
     (sentPayload.case_documents || []).forEach((doc, j) => {
       const createdDoc = created.documents?.[j];
-      if (createdDoc) documentIdByPendingKey[`case:${doc.doc_type}`] = createdDoc.id;
+      if (createdDoc) createdDocByPendingKey[`case:${doc.doc_type}`] = createdDoc;
     });
 
     const rekeyed = {};
     Object.entries(pendingFilesRef.current).forEach(([key, file]) => {
-      const documentId = documentIdByPendingKey[key];
-      if (documentId != null) rekeyed[documentId] = file;
+      const createdDoc = createdDocByPendingKey[key];
+      if (createdDoc) rekeyed[createdDoc.id] = { file, s3Key: createdDoc.s3_key, mimeType: createdDoc.mime_type };
     });
 
     setCaseData(created);
-    setPendingFiles(rekeyed);
+    setPendingFiles(Object.fromEntries(Object.entries(rekeyed).map(([id, { file }]) => [id, file])));
     setCreatingCase(false);
     if (Object.keys(rekeyed).length) {
       uploadDocumentContents(rekeyed, created.id);
