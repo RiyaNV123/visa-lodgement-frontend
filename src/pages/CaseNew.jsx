@@ -76,26 +76,6 @@ async function extractPreview(docType, file) {
   }
 }
 
-// A short, human-readable summary of whatever extract-preview found for
-// this document -- deliberately only mentions fields that are actually
-// present, since a miss here isn't an error (see extractPreview above).
-function describeExtracted(extracted) {
-  if (!extracted) return null;
-  const parts = [];
-  if (extracted.start_date && extracted.end_date) parts.push(`${extracted.start_date} → ${extracted.end_date}`);
-  else if (extracted.start_date) parts.push(`Starts ${extracted.start_date}`);
-  else if (extracted.end_date) parts.push(`Ends ${extracted.end_date}`);
-  if (extracted.cricos_code) parts.push(`CRICOS ${extracted.cricos_code}${extracted.cricos_weeks != null ? ` (${extracted.cricos_weeks} wks)` : ""}`);
-  if (extracted.visa_subclass || extracted.visa_length_of_stay_date) {
-    parts.push(`Subclass ${extracted.visa_subclass || "?"}, valid to ${extracted.visa_length_of_stay_date || "?"}`);
-  }
-  if (extracted.pte_valid_until_date) parts.push(`Valid until ${extracted.pte_valid_until_date}`);
-  if (extracted.ovhc_relevant_date) parts.push(`Policy start ${extracted.ovhc_relevant_date}`);
-  if (extracted.afp_issue_date) parts.push(`Issued ${extracted.afp_issue_date}`);
-  if (extracted.new_coe_start_date) parts.push(`Starts ${extracted.new_coe_start_date}`);
-  return parts.length ? parts.join(" · ") : null;
-}
-
 function emptyDraft(stream = "vocational") {
   const streamDefinition = STREAMS.find((item) => item.value === stream);
   return {
@@ -118,15 +98,17 @@ function buildLabels(qualifications) {
   });
 }
 
-function DocPickerField({ field, file, extracting, extracted, error, onPick, onRemove }) {
+function DocPickerField({ field, file, error, onPick, onRemove }) {
+  // Extraction still runs in the background the moment a file is attached
+  // (see pickFile/pickCaseFile below) -- it's just not shown here anymore.
+  // The result surfaces later, all together, on the review screen right
+  // after Save (see ExtractedDetailsReview in CaseDetail.jsx).
   function previewFile() {
     if (!file) return;
     const url = URL.createObjectURL(file);
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
-
-  const extractedSummary = describeExtracted(extracted);
 
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-[#c2c7ce]/60 px-4 py-3">
@@ -140,8 +122,6 @@ function DocPickerField({ field, file, extracting, extracted, error, onPick, onR
         ) : (
           <p className="text-xs text-[#72777e]">{field.required ? "Required" : "Optional"}</p>
         )}
-        {file && extracting && <p className="text-xs text-[#72777e]">Reading document…</p>}
-        {file && !extracting && extractedSummary && <p className="truncate text-xs text-[#126b2f]">{extractedSummary}</p>}
         {error && <p className="text-xs text-[#b42318]">{error}</p>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -410,8 +390,6 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
                   key={field.key}
                   field={field}
                   file={draft.files[field.key]}
-                  extracting={Boolean(draft.files[field.key]) && draft.extracted[field.key] === undefined}
-                  extracted={draft.extracted[field.key]}
                   error={fieldErrors[field.key]}
                   onPick={(e) => pickFile(field.key, e)}
                   onRemove={() => removeFile(field.key)}
@@ -644,8 +622,6 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
                   key={field.key}
                   field={field}
                   file={caseFiles[field.key]}
-                  extracting={Boolean(caseFiles[field.key]) && caseExtracted[field.key] === undefined}
-                  extracted={caseExtracted[field.key]}
                   error={caseFieldErrors[field.key]}
                   onPick={(e) => pickCaseFile(field.key, e)}
                   onRemove={() => removeCaseFile(field.key)}

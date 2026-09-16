@@ -64,6 +64,101 @@ const CASE_DOC_SLOTS = [
   { doc_type: "ovhc", label: "OVHC", required: true },
 ];
 
+function ReviewField({ label, value, attached }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg bg-[#f4f3f1] px-3 py-2">
+      <span className="text-xs font-semibold text-[#1a1c1a]">{label}</span>
+      <span className="text-xs text-[#42474d]">{!attached ? "Not attached" : value || "Not detected"}</span>
+    </div>
+  );
+}
+
+// Shown right after Save, before any eligibility check runs -- reads
+// straight from the payload the student just submitted (see CaseNew.jsx's
+// handleSubmit), which already carries whatever extract-preview found for
+// each document. No backend call needed to render this: the case is being
+// created in the background at the same time, so this gives the student
+// something real to check immediately instead of a wait. Clicking Next only
+// flips a local flag (see reviewConfirmed in CaseDetail); the actual
+// eligibility check waits for both that click and the case actually
+// existing, whichever comes last.
+function ExtractedDetailsReview({ payload, onNext }) {
+  const attachedCaseDocTypes = new Set((payload.case_documents || []).map((d) => d.doc_type));
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="font-headline text-2xl font-bold text-[#002d48]">Here's what we found</p>
+        <p className="mt-2 text-sm font-medium text-[#42474d]">
+          We've pulled these details out of the documents you attached — take a moment to check them over. Your case
+          is being saved in the background, so results will be ready shortly after you continue.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {payload.courses.map((course, index) => (
+          <div key={index} className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+            <div className="flex items-center justify-between">
+              <p className="font-headline text-lg font-bold text-[#002d48]">{course.name}</p>
+              <span className="rounded-full bg-[#f4f3f1] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#5f6670]">
+                {course.course_type}
+              </span>
+            </div>
+            <dl className="mt-3 space-y-1.5 text-xs">
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#72777e]">Dates</dt>
+                <dd className="font-semibold text-[#1a1c1a]">
+                  {course.start_date && course.end_date ? `${course.start_date} to ${course.end_date}` : "Not detected"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#72777e]">CRICOS</dt>
+                <dd className="font-semibold text-[#1a1c1a]">
+                  {course.cricos_code ? `${course.cricos_code}${course.cricos_weeks != null ? ` · ${course.cricos_weeks} wks` : ""}` : "Not detected"}
+                </dd>
+              </div>
+            </dl>
+            {(!course.start_date || !course.end_date || !course.cricos_code) && (
+              <p className="mt-2 text-xs text-[#8a5b00]">
+                Some details weren't picked up automatically — that's fine, an admin can add them by hand.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+        <p className="font-headline text-lg font-bold text-[#002d48]">Additional Documents</p>
+        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <ReviewField
+            label="Current Visa"
+            value={payload.visa_subclass && payload.visa_length_of_stay_date ? `Subclass ${payload.visa_subclass}, valid to ${payload.visa_length_of_stay_date}` : null}
+            attached={attachedCaseDocTypes.has("current_visa")}
+          />
+          <ReviewField label="PTE" value={payload.pte_valid_until_date ? `Valid until ${payload.pte_valid_until_date}` : null} attached={attachedCaseDocTypes.has("pte")} />
+          <ReviewField label="OVHC" value={payload.ovhc_relevant_date ? `Relevant date ${payload.ovhc_relevant_date}` : null} attached={attachedCaseDocTypes.has("ovhc")} />
+          <ReviewField
+            label="AFP (Certificate or Receipt)"
+            value={payload.afp_issue_date ? `Issued ${payload.afp_issue_date}` : null}
+            attached={attachedCaseDocTypes.has("afp_certificate") || attachedCaseDocTypes.has("afp_receipt")}
+          />
+          {attachedCaseDocTypes.has("new_coe") && (
+            <ReviewField label="New CoE" value={payload.new_coe_start_date ? `Starts ${payload.new_coe_start_date}` : null} attached />
+          )}
+        </dl>
+      </div>
+
+      <button
+        type="button"
+        onClick={onNext}
+        className="w-full rounded-lg bg-[#002d48] px-6 py-3 text-sm font-bold font-headline text-white shadow-sm hover:bg-[#004384] sm:w-auto"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
 // Placeholder case shown the instant the qualifications screen hands off --
 // the real case doesn't exist on the server yet (that's created in the
 // background, see the creatingCase effect below), so this is built purely
@@ -133,6 +228,15 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // admin's view (which ignores `step` entirely -- see showQualifications/
   // showAdditional below) keeps working unchanged.
   const [step] = useState("submitted"); // "qualifications" | "additional" | "submitted"
+  // Gates the results screen behind a "here's what we found" review step,
+  // shown only right after a brand-new case is created (isFull) -- not on a
+  // later revisit (no pendingCreate then), and not for a stream-change
+  // (extraction isn't collected for that flow). Reading straight from
+  // pendingCreate.payload -- the exact data the student already
+  // provided -- means this can render instantly, with no wait of its own;
+  // the real case-creation work keeps happening in the background while
+  // they read it, so clicking Next often finds it already done.
+  const [reviewConfirmed, setReviewConfirmed] = useState(!pendingCreate || !pendingCreate.isFull);
   const caseCreationStarted = useRef(false);
   const autoCheckStarted = useRef(false);
 
@@ -528,7 +632,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // validity only once qualification is eligible, lodgement date only once
   // both are) now lives entirely in the single runChecks call/endpoint.
   useEffect(() => {
-    if (isAdmin || !caseData?.id || autoCheckStarted.current) return;
+    if (isAdmin || !caseData?.id || !reviewConfirmed || autoCheckStarted.current) return;
     // "pending" keeps retrying on every visit (a genuine, possibly-fixable
     // data gap -- e.g. a document the student hasn't added yet); "eligible"
     // and "not_eligible" are final verdicts that only need a run once, to
@@ -540,7 +644,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     autoCheckStarted.current = true;
     runChecks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, caseData?.id]);
+  }, [isAdmin, caseData?.id, reviewConfirmed]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -577,7 +681,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
 
   const showQualifications = isAdmin || step === "qualifications";
   const showAdditional = isAdmin || step === "additional";
-  const showSubmitted = !isAdmin && step === "submitted";
+  const showReview = !isAdmin && step === "submitted" && !reviewConfirmed;
+  const showSubmitted = !isAdmin && step === "submitted" && reviewConfirmed;
 
   return (
     <AppShell>
@@ -703,6 +808,10 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
               ))}
             </div>
           </div>
+        )}
+
+        {showReview && (
+          <ExtractedDetailsReview payload={pendingCreate.payload} onNext={() => setReviewConfirmed(true)} />
         )}
 
         {showSubmitted && (
