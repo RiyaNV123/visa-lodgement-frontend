@@ -1,7 +1,7 @@
 import { useState } from "react";
-import client from "../api/client.js";
 import AppShell from "../components/AppShell.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { extractPreview } from "../utils/extractPreview.js";
 
 const COURSE_TYPES = [
   { value: "certificate", label: "Certificate" },
@@ -56,24 +56,6 @@ function validateFile(file) {
   if (!ALLOWED_TYPES.includes(file.type)) return "Only PDF, JPG, or PNG files are allowed";
   if (file.size > MAX_BYTES) return "File exceeds 15MB limit";
   return null;
-}
-
-// Runs the same extraction a real upload always did, but against bytes that
-// are never saved anywhere (see POST /cases/extract-preview) -- so the
-// student can see what was found the instant they attach a file, well
-// before Save. A failure here just means nothing to show yet; it's not
-// surfaced as an error since the document itself is still perfectly fine to
-// submit -- an admin can always fill in a gap later, same as today.
-async function extractPreview(docType, file) {
-  try {
-    const form = new FormData();
-    form.append("doc_type", docType);
-    form.append("file", file);
-    const res = await client.post("/cases/extract-preview", form, { headers: { "Content-Type": "multipart/form-data" } });
-    return res.data;
-  } catch {
-    return {}; // resolved, just nothing found -- distinct from "still pending" (undefined)
-  }
 }
 
 function emptyDraft(stream = "vocational") {
@@ -311,9 +293,19 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
       return;
     }
 
+    // Keys (same "0:coe" / "case:current_visa" shape as pendingFiles) whose
+    // extraction hadn't resolved yet at the moment Save was clicked -- the
+    // review screen re-checks exactly these (it still has the same File
+    // objects, via pendingFiles) and shows them as loading in the meantime,
+    // rather than showing a possibly-wrong "not detected" for something
+    // that just hasn't had time to finish yet.
+    const pendingExtractionKeys = [];
+
     const courses = qualifications.map((q, i) => {
       const cl = q.extracted?.completion_letter || {};
       const coe = q.extracted?.coe || {};
+      if (q.files.completion_letter && q.extracted?.completion_letter === undefined) pendingExtractionKeys.push(`${i}:completion_letter`);
+      if (q.files.coe && q.extracted?.coe === undefined) pendingExtractionKeys.push(`${i}:coe`);
       const documents = DOC_FIELDS.filter((field) => q.files[field.key]).map((field) => ({
         doc_type: field.key,
         file_name: `${labels[i]} - ${field.label}${EXTENSION_FOR_TYPE[q.files[field.key].type] || ""}`,
@@ -336,6 +328,9 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
       file_name: `${field.label}${EXTENSION_FOR_TYPE[caseFiles[field.key].type] || ""}`,
       mime_type: caseFiles[field.key].type,
     }));
+    CASE_DOC_FIELDS.forEach((field) => {
+      if (caseFiles[field.key] && caseExtracted[field.key] === undefined) pendingExtractionKeys.push(`case:${field.key}`);
+    });
     const visa = caseExtracted.current_visa || {};
     const pte = caseExtracted.pte || {};
     const ovhc = caseExtracted.ovhc || {};
@@ -355,7 +350,7 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
       afp_issue_date: afp.afp_issue_date || afpReceipt.afp_issue_date || null,
       new_coe_start_date: newCoe.new_coe_start_date || null,
     };
-    onCreated?.({ payload, isFull: true, existingCaseId: null }, pendingFiles);
+    onCreated?.({ payload, isFull: true, existingCaseId: null, pendingExtractionKeys }, pendingFiles);
   }
 
   const allowedCourseTypes = STREAMS.find((item) => item.value === stream).courseTypes;

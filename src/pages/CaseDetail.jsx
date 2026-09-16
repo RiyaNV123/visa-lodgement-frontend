@@ -5,6 +5,7 @@ import AppShell from "../components/AppShell.jsx";
 import DocUploadSlot from "../components/DocUploadSlot.jsx";
 import Spinner, { PageLoader } from "../components/Spinner.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { extractPreview } from "../utils/extractPreview.js";
 
 const STREAM_LABEL = { vocational: "Post Vocational 485", higher: "Post Higher 485" };
 
@@ -64,11 +65,11 @@ const CASE_DOC_SLOTS = [
   { doc_type: "ovhc", label: "OVHC", required: true },
 ];
 
-function ReviewField({ label, value, attached }) {
+function ReviewField({ label, value, attached, loading }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg bg-[#f4f3f1] px-3 py-2">
       <span className="text-xs font-semibold text-[#1a1c1a]">{label}</span>
-      <span className="text-xs text-[#42474d]">{!attached ? "Not attached" : value || "Not detected"}</span>
+      <span className="text-xs text-[#42474d]">{loading ? "Reading document…" : !attached ? "Not attached" : value || "Not detected"}</span>
     </div>
   );
 }
@@ -82,8 +83,15 @@ function ReviewField({ label, value, attached }) {
 // flips a local flag (see reviewConfirmed in CaseDetail); the actual
 // eligibility check waits for both that click and the case actually
 // existing, whichever comes last.
-function ExtractedDetailsReview({ payload, onNext }) {
+//
+// A file whose extraction hadn't resolved yet when Save was clicked shows
+// as "Reading document…" here (via pendingExtractionKeys/pendingResults --
+// see the re-check effect in CaseDetail) instead of a possibly-wrong "not
+// detected" -- once it resolves, this re-renders with the real value.
+function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendingResults }) {
   const attachedCaseDocTypes = new Set((payload.case_documents || []).map((d) => d.doc_type));
+  const isPending = (key) => pendingExtractionKeys.includes(key) && !pendingResults[key];
+  const afpKeyAttached = attachedCaseDocTypes.has("afp_certificate") ? "case:afp_certificate" : "case:afp_receipt";
 
   return (
     <div className="space-y-6">
@@ -96,35 +104,47 @@ function ExtractedDetailsReview({ payload, onNext }) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {payload.courses.map((course, index) => (
-          <div key={index} className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-            <div className="flex items-center justify-between">
-              <p className="font-headline text-lg font-bold text-[#002d48]">{course.name}</p>
-              <span className="rounded-full bg-[#f4f3f1] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#5f6670]">
-                {course.course_type}
-              </span>
+        {payload.courses.map((course, index) => {
+          const clKey = `${index}:completion_letter`;
+          const coeKey = `${index}:coe`;
+          const clResult = pendingResults[clKey];
+          const coeResult = pendingResults[coeKey];
+          const startDate = clResult ? clResult.start_date : course.start_date;
+          const endDate = clResult ? clResult.end_date : course.end_date;
+          const cricosCode = coeResult ? coeResult.cricos_code : course.cricos_code;
+          const cricosWeeks = coeResult ? coeResult.cricos_weeks : course.cricos_weeks;
+          const datesLoading = isPending(clKey);
+          const cricosLoading = isPending(coeKey);
+          return (
+            <div key={index} className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+              <div className="flex items-center justify-between">
+                <p className="font-headline text-lg font-bold text-[#002d48]">{course.name}</p>
+                <span className="rounded-full bg-[#f4f3f1] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#5f6670]">
+                  {course.course_type}
+                </span>
+              </div>
+              <dl className="mt-3 space-y-1.5 text-xs">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-[#72777e]">Dates</dt>
+                  <dd className="font-semibold text-[#1a1c1a]">
+                    {datesLoading ? "Reading document…" : startDate && endDate ? `${startDate} to ${endDate}` : "Not detected"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-[#72777e]">CRICOS</dt>
+                  <dd className="font-semibold text-[#1a1c1a]">
+                    {cricosLoading ? "Reading document…" : cricosCode ? `${cricosCode}${cricosWeeks != null ? ` · ${cricosWeeks} wks` : ""}` : "Not detected"}
+                  </dd>
+                </div>
+              </dl>
+              {!datesLoading && !cricosLoading && (!startDate || !endDate || !cricosCode) && (
+                <p className="mt-2 text-xs text-[#8a5b00]">
+                  Some details weren't picked up automatically — that's fine, an admin can add them by hand.
+                </p>
+              )}
             </div>
-            <dl className="mt-3 space-y-1.5 text-xs">
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#72777e]">Dates</dt>
-                <dd className="font-semibold text-[#1a1c1a]">
-                  {course.start_date && course.end_date ? `${course.start_date} to ${course.end_date}` : "Not detected"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#72777e]">CRICOS</dt>
-                <dd className="font-semibold text-[#1a1c1a]">
-                  {course.cricos_code ? `${course.cricos_code}${course.cricos_weeks != null ? ` · ${course.cricos_weeks} wks` : ""}` : "Not detected"}
-                </dd>
-              </div>
-            </dl>
-            {(!course.start_date || !course.end_date || !course.cricos_code) && (
-              <p className="mt-2 text-xs text-[#8a5b00]">
-                Some details weren't picked up automatically — that's fine, an admin can add them by hand.
-              </p>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
@@ -132,18 +152,35 @@ function ExtractedDetailsReview({ payload, onNext }) {
         <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <ReviewField
             label="Current Visa"
+            loading={isPending("case:current_visa")}
             value={payload.visa_subclass && payload.visa_length_of_stay_date ? `Subclass ${payload.visa_subclass}, valid to ${payload.visa_length_of_stay_date}` : null}
             attached={attachedCaseDocTypes.has("current_visa")}
           />
-          <ReviewField label="PTE" value={payload.pte_valid_until_date ? `Valid until ${payload.pte_valid_until_date}` : null} attached={attachedCaseDocTypes.has("pte")} />
-          <ReviewField label="OVHC" value={payload.ovhc_relevant_date ? `Relevant date ${payload.ovhc_relevant_date}` : null} attached={attachedCaseDocTypes.has("ovhc")} />
+          <ReviewField
+            label="PTE"
+            loading={isPending("case:pte")}
+            value={payload.pte_valid_until_date ? `Valid until ${payload.pte_valid_until_date}` : null}
+            attached={attachedCaseDocTypes.has("pte")}
+          />
+          <ReviewField
+            label="OVHC"
+            loading={isPending("case:ovhc")}
+            value={payload.ovhc_relevant_date ? `Relevant date ${payload.ovhc_relevant_date}` : null}
+            attached={attachedCaseDocTypes.has("ovhc")}
+          />
           <ReviewField
             label="AFP (Certificate or Receipt)"
+            loading={isPending(afpKeyAttached)}
             value={payload.afp_issue_date ? `Issued ${payload.afp_issue_date}` : null}
             attached={attachedCaseDocTypes.has("afp_certificate") || attachedCaseDocTypes.has("afp_receipt")}
           />
           {attachedCaseDocTypes.has("new_coe") && (
-            <ReviewField label="New CoE" value={payload.new_coe_start_date ? `Starts ${payload.new_coe_start_date}` : null} attached />
+            <ReviewField
+              label="New CoE"
+              loading={isPending("case:new_coe")}
+              value={payload.new_coe_start_date ? `Starts ${payload.new_coe_start_date}` : null}
+              attached
+            />
           )}
         </dl>
       </div>
@@ -237,6 +274,12 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // the real case-creation work keeps happening in the background while
   // they read it, so clicking Next often finds it already done.
   const [reviewConfirmed, setReviewConfirmed] = useState(!pendingCreate || !pendingCreate.isFull);
+  // Keyed the same as pendingFiles ("0:completion_letter", "case:pte", ...) --
+  // holds the re-checked extract-preview result for any file whose first
+  // attempt (fired back on the qualifications screen) hadn't resolved yet
+  // by the time Save was clicked. See the effect below and
+  // ExtractedDetailsReview's isPending.
+  const [pendingExtractionResults, setPendingExtractionResults] = useState({});
   const caseCreationStarted = useRef(false);
   const autoCheckStarted = useRef(false);
 
@@ -567,6 +610,29 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCreate]);
 
+  // Re-checks extraction for any file whose first attempt (fired back on
+  // the qualifications screen, before Save) hadn't resolved yet -- this
+  // screen still has the same File objects via pendingFiles/
+  // initialPendingFiles, so it just runs the same stateless check again.
+  // Purely for the review screen's own display: create-full already went
+  // out with whatever was known at Save time, and self-healing during
+  // run-checks independently fills in anything still missing server-side
+  // -- this doesn't feed back into what gets submitted, it only replaces
+  // a premature "not detected" with the real value once it's in.
+  useEffect(() => {
+    const keys = pendingCreate?.pendingExtractionKeys;
+    if (!keys?.length) return;
+    keys.forEach((key) => {
+      const file = initialPendingFiles?.[key];
+      if (!file) return;
+      const [, docType] = key.split(":");
+      extractPreview(docType, file).then((result) => {
+        setPendingExtractionResults((prev) => ({ ...prev, [key]: result }));
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Triggers all three cascading checks (qualification/CRICOS duration,
   // document validity, lodgement date) in one backend call -- the backend
   // runs them in order and short-circuits exactly as before (document
@@ -811,7 +877,12 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
         )}
 
         {showReview && (
-          <ExtractedDetailsReview payload={pendingCreate.payload} onNext={() => setReviewConfirmed(true)} />
+          <ExtractedDetailsReview
+            payload={pendingCreate.payload}
+            onNext={() => setReviewConfirmed(true)}
+            pendingExtractionKeys={pendingCreate.pendingExtractionKeys || []}
+            pendingResults={pendingExtractionResults}
+          />
         )}
 
         {showSubmitted && (
