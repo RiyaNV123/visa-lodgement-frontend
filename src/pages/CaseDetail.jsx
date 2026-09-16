@@ -65,11 +65,36 @@ const CASE_DOC_SLOTS = [
   { doc_type: "ovhc", label: "OVHC", required: true },
 ];
 
-function ReviewField({ label, value, attached, loading }) {
+// One attribute/value table per document -- e.g. Current Visa gets two rows
+// (Type, Expiry), AFP gets one (Date), a qualification gets four (Start
+// Date, End Date, CRICOS Code, CRICOS Weeks). Same table styling already
+// used for every other "Calculation Details" breakdown in this app (see the
+// results grid below), so this reads as one consistent design, not a
+// one-off.
+function ReviewDocTable({ label, attached, loading, rows }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg bg-[#f4f3f1] px-3 py-2">
-      <span className="text-xs font-semibold text-[#1a1c1a]">{label}</span>
-      <span className="text-xs text-[#42474d]">{loading ? "Reading document…" : !attached ? "Not attached" : value || "Not detected"}</span>
+    <div className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+      <p className="text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
+      {!attached ? (
+        <p className="mt-1 text-xs text-[#72777e]">Not attached</p>
+      ) : (
+        <table className="mt-2 w-full text-left text-xs">
+          <thead>
+            <tr className="text-[#72777e]">
+              <th className="pb-1 pr-2 font-semibold">Attribute</th>
+              <th className="pb-1 font-semibold">Value</th>
+            </tr>
+          </thead>
+          <tbody className="text-[#1a1c1a]">
+            {rows.map((row) => (
+              <tr key={row.attribute} className="border-t border-[#c2c7ce]/40">
+                <td className="py-1.5 pr-2 text-[#72777e]">{row.attribute}</td>
+                <td className="py-1.5 font-semibold">{loading ? "Reading document…" : row.value || "Not detected"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -123,20 +148,32 @@ function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendin
                   {course.course_type}
                 </span>
               </div>
-              <dl className="mt-3 space-y-1.5 text-xs">
-                <div className="flex justify-between gap-3">
-                  <dt className="text-[#72777e]">Dates</dt>
-                  <dd className="font-semibold text-[#1a1c1a]">
-                    {datesLoading ? "Reading document…" : startDate && endDate ? `${startDate} to ${endDate}` : "Not detected"}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <dt className="text-[#72777e]">CRICOS</dt>
-                  <dd className="font-semibold text-[#1a1c1a]">
-                    {cricosLoading ? "Reading document…" : cricosCode ? `${cricosCode}${cricosWeeks != null ? ` · ${cricosWeeks} wks` : ""}` : "Not detected"}
-                  </dd>
-                </div>
-              </dl>
+              <table className="mt-3 w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[#72777e]">
+                    <th className="pb-1 pr-2 font-semibold">Attribute</th>
+                    <th className="pb-1 font-semibold">Value</th>
+                  </tr>
+                </thead>
+                <tbody className="text-[#1a1c1a]">
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">Start Date</td>
+                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : startDate || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">End Date</td>
+                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : endDate || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Code</td>
+                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosCode || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Weeks</td>
+                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosWeeks ?? "Not detected"}</td>
+                  </tr>
+                </tbody>
+              </table>
               {!datesLoading && !cricosLoading && (!startDate || !endDate || !cricosCode) && (
                 <p className="mt-2 text-xs text-[#8a5b00]">
                   Some details weren't picked up automatically — that's fine, an admin can add them by hand.
@@ -149,40 +186,43 @@ function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendin
 
       <div className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
         <p className="font-headline text-lg font-bold text-[#002d48]">Additional Documents</p>
-        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <ReviewField
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <ReviewDocTable
             label="Current Visa"
-            loading={isPending("case:current_visa")}
-            value={payload.visa_subclass && payload.visa_length_of_stay_date ? `Subclass ${payload.visa_subclass}, valid to ${payload.visa_length_of_stay_date}` : null}
             attached={attachedCaseDocTypes.has("current_visa")}
+            loading={isPending("case:current_visa")}
+            rows={[
+              { attribute: "Type", value: payload.visa_subclass },
+              { attribute: "Expiry", value: payload.visa_length_of_stay_date },
+            ]}
           />
-          <ReviewField
+          <ReviewDocTable
             label="PTE"
-            loading={isPending("case:pte")}
-            value={payload.pte_valid_until_date ? `Valid until ${payload.pte_valid_until_date}` : null}
             attached={attachedCaseDocTypes.has("pte")}
+            loading={isPending("case:pte")}
+            rows={[{ attribute: "Validity", value: payload.pte_valid_until_date }]}
           />
-          <ReviewField
+          <ReviewDocTable
             label="OVHC"
-            loading={isPending("case:ovhc")}
-            value={payload.ovhc_relevant_date ? `Relevant date ${payload.ovhc_relevant_date}` : null}
             attached={attachedCaseDocTypes.has("ovhc")}
+            loading={isPending("case:ovhc")}
+            rows={[{ attribute: "Relevant Date", value: payload.ovhc_relevant_date }]}
           />
-          <ReviewField
+          <ReviewDocTable
             label="AFP (Certificate or Receipt)"
-            loading={isPending(afpKeyAttached)}
-            value={payload.afp_issue_date ? `Issued ${payload.afp_issue_date}` : null}
             attached={attachedCaseDocTypes.has("afp_certificate") || attachedCaseDocTypes.has("afp_receipt")}
+            loading={isPending(afpKeyAttached)}
+            rows={[{ attribute: "Date", value: payload.afp_issue_date }]}
           />
           {attachedCaseDocTypes.has("new_coe") && (
-            <ReviewField
+            <ReviewDocTable
               label="New CoE"
-              loading={isPending("case:new_coe")}
-              value={payload.new_coe_start_date ? `Starts ${payload.new_coe_start_date}` : null}
               attached
+              loading={isPending("case:new_coe")}
+              rows={[{ attribute: "Start Date", value: payload.new_coe_start_date }]}
             />
           )}
-        </dl>
+        </div>
       </div>
 
       <button
