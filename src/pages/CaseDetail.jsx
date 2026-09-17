@@ -93,16 +93,16 @@ const CASE_DOC_SLOTS = [
 function ReviewDocTable({ label, attached, loading, rows }) {
   return (
     <div className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
-      <p className="text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
+      <p className="border-b-2 border-[#002d48]/30 pb-1.5 text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
       {!attached ? (
         <p className="mt-1 text-xs text-[#72777e]">Not attached</p>
       ) : (
         <table className="mt-2 w-full text-left text-xs">
           <tbody className="text-[#1a1c1a]">
             {rows.map((row) => (
-              <tr key={row.attribute} className="border-t border-[#c2c7ce]/40 first:border-t-0">
+              <tr key={row.attribute}>
                 <td className="py-1.5 pr-2 text-[#72777e]">{row.attribute}</td>
-                <td className="py-1.5 font-semibold">{loading ? "Reading document…" : row.value || "Not detected"}</td>
+                <td className="py-1.5 text-right font-semibold">{loading ? "Reading document…" : row.value || "Not detected"}</td>
               </tr>
             ))}
           </tbody>
@@ -165,19 +165,19 @@ function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendin
                 <tbody className="text-[#1a1c1a]">
                   <tr>
                     <td className="py-1.5 pr-2 text-[#72777e]">Start Date</td>
-                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : startDate || "Not detected"}</td>
+                    <td className="py-1.5 text-right font-semibold">{datesLoading ? "Reading document…" : startDate || "Not detected"}</td>
                   </tr>
                   <tr className="border-t border-[#c2c7ce]/40">
                     <td className="py-1.5 pr-2 text-[#72777e]">End Date</td>
-                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : endDate || "Not detected"}</td>
+                    <td className="py-1.5 text-right font-semibold">{datesLoading ? "Reading document…" : endDate || "Not detected"}</td>
                   </tr>
                   <tr className="border-t border-[#c2c7ce]/40">
                     <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Code</td>
-                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosCode || "Not detected"}</td>
+                    <td className="py-1.5 text-right font-semibold">{cricosLoading ? "Reading document…" : cricosCode || "Not detected"}</td>
                   </tr>
                   <tr className="border-t border-[#c2c7ce]/40">
                     <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Weeks</td>
-                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosWeeks ?? "Not detected"}</td>
+                    <td className="py-1.5 text-right font-semibold">{cricosLoading ? "Reading document…" : cricosWeeks ?? "Not detected"}</td>
                   </tr>
                 </tbody>
               </table>
