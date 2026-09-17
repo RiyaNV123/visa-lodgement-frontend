@@ -1,6 +1,7 @@
 import { useState } from "react";
 import AppShell from "../components/AppShell.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { extractPreview } from "../utils/extractPreview.js";
 
 const COURSE_TYPES = [
   { value: "certificate", label: "Certificate" },
@@ -49,6 +50,7 @@ function emptyCaseFiles() {
 
 const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_BYTES = 15 * 1024 * 1024;
+const EXTENSION_FOR_TYPE = { "application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png" };
 
 function validateFile(file) {
   if (!ALLOWED_TYPES.includes(file.type)) return "Only PDF, JPG, or PNG files are allowed";
@@ -61,6 +63,10 @@ function emptyDraft(stream = "vocational") {
   return {
     courseType: streamDefinition.courseTypes[0],
     files: { coe: null, completion_letter: null, transcript: null, academic_certificate: null },
+    // Keyed the same as files; a key absent/undefined means "not yet
+    // resolved" (still extracting or nothing picked), an empty object means
+    // "resolved, nothing found" -- see describeExtracted/extractPreview.
+    extracted: {},
   };
 }
 
@@ -75,6 +81,10 @@ function buildLabels(qualifications) {
 }
 
 function DocPickerField({ field, file, error, onPick, onRemove }) {
+  // Extraction still runs in the background the moment a file is attached
+  // (see pickFile/pickCaseFile below) -- it's just not shown here anymore.
+  // The result surfaces later, all together, on the review screen right
+  // after Save (see ExtractedDetailsReview in CaseDetail.jsx).
   function previewFile() {
     if (!file) return;
     const url = URL.createObjectURL(file);
@@ -138,6 +148,9 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
   // document error or an unnecessary re-upload prompt.
   const collectCaseDocs = !existingCaseId;
   const [caseFiles, setCaseFiles] = useState(() => emptyCaseFiles());
+  // Same "absent = still pending, {} = resolved but nothing found" shape as
+  // a qualification's draft.extracted.
+  const [caseExtracted, setCaseExtracted] = useState({});
   const [caseFieldErrors, setCaseFieldErrors] = useState({});
   const [mode, setMode] = useState("list"); // "list" | "form" | "preview"
   const [draft, setDraft] = useState(emptyDraft());
@@ -153,7 +166,7 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
 
   function startEdit(index) {
     const qualification = qualifications[index];
-    setDraft({ ...qualification, files: { ...qualification.files } });
+    setDraft({ ...qualification, files: { ...qualification.files }, extracted: { ...(qualification.extracted || {}) } });
     setFieldErrors({});
     setEditingIndex(index);
     setMode("form");
@@ -174,11 +187,24 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
     const err = validateFile(file);
     setFieldErrors((prev) => ({ ...prev, [key]: err || undefined }));
     if (err) return;
-    setDraft((prev) => ({ ...prev, files: { ...prev.files, [key]: file } }));
+    setDraft((prev) => {
+      const { [key]: _drop, ...restExtracted } = prev.extracted;
+      return { ...prev, files: { ...prev.files, [key]: file }, extracted: restExtracted };
+    });
+    // Fired the instant the file is attached -- not gated on Preview/Save.
+    // Guarded against the file having since been removed/replaced (editing
+    // a different qualification, or swapping this exact slot) by checking
+    // it's still the same File reference when this resolves.
+    extractPreview(key, file).then((result) => {
+      setDraft((prev) => (prev.files[key] === file ? { ...prev, extracted: { ...prev.extracted, [key]: result } } : prev));
+    });
   }
 
   function removeFile(key) {
-    setDraft((prev) => ({ ...prev, files: { ...prev.files, [key]: null } }));
+    setDraft((prev) => {
+      const { [key]: _drop, ...restExtracted } = prev.extracted;
+      return { ...prev, files: { ...prev.files, [key]: null }, extracted: restExtracted };
+    });
     setFieldErrors((prev) => ({ ...prev, [key]: undefined }));
   }
 
@@ -189,10 +215,24 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
     setCaseFieldErrors((prev) => ({ ...prev, [key]: err || undefined }));
     if (err) return;
     setCaseFiles((prev) => ({ ...prev, [key]: file }));
+    setCaseExtracted((prev) => {
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+    extractPreview(key, file).then((result) => {
+      setCaseFiles((current) => {
+        if (current[key] === file) setCaseExtracted((prev) => ({ ...prev, [key]: result }));
+        return current;
+      });
+    });
   }
 
   function removeCaseFile(key) {
     setCaseFiles((prev) => ({ ...prev, [key]: null }));
+    setCaseExtracted((prev) => {
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
     setCaseFieldErrors((prev) => ({ ...prev, [key]: undefined }));
   }
 
@@ -209,24 +249,29 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
   }
 
   // Neither creating the case nor uploading its documents happens here --
-  // both are the slow part (a real Google Sheets + Drive round-trip each),
-  // and making the student sit through them before they can even see the
-  // next screen is exactly the wait we're removing. Package up everything
-  // the next screen needs and hand off immediately; it creates the case and
-  // uploads the files in the background while already fully interactive.
-  // Qualifications don't have real course ids yet, so pending files are
-  // keyed by their position instead -- the next screen re-keys them by real
-  // course id once the case actually exists. Case-level files use the same
-  // "case:<doc_type>" key the next screen already understands.
+  // both are the slow part (a real Google Sheets round-trip each), and
+  // making the student sit through them before they can even see the next
+  // screen is exactly the wait we're removing. Package up everything the
+  // next screen needs and hand off immediately; it creates the case (and
+  // uploads the files' actual bytes) in the background while already fully
+  // interactive. Qualifications don't have real course ids yet, so pending
+  // files are keyed by their position instead -- the next screen re-keys
+  // them by real document id once the case actually exists. Case-level
+  // files use the same "case:<doc_type>" key the next screen already
+  // understands.
+  //
+  // A brand-new case (no existingCaseId) goes through create-full: every
+  // qualification/case document has already been extracted (see
+  // extractPreview above, fired the instant each file was attached), so
+  // the whole case -- dates, CRICOS code/weeks, visa/PTE/OVHC/AFP fields,
+  // and every document's metadata -- gets created in ONE batched call
+  // instead of the old one-Sheets-write-per-document drip (see
+  // create_case_full in cases_router.py for why that matters). Changing
+  // stream on an EXISTING case still goes through the old replace flow
+  // unchanged for now -- narrower, less common, and not worth the added
+  // risk of also rewriting PUT /cases/{id}/replace in the same pass.
   function handleSubmit() {
     const labels = buildLabels(qualifications);
-    const courses = qualifications.map((q, i) => ({
-      name: labels[i],
-      course_type: q.courseType,
-      sort_order: i,
-    }));
-    const payload = { student_name: user.full_name, stream, courses };
-
     const pendingFiles = {};
     qualifications.forEach((q, i) => {
       DOC_FIELDS.forEach((field) => {
@@ -241,7 +286,71 @@ export default function CaseNew({ onCreated, existingCaseId = null }) {
       });
     }
 
-    onCreated?.({ payload, existingCaseId }, pendingFiles);
+    if (existingCaseId) {
+      const courses = qualifications.map((q, i) => ({ name: labels[i], course_type: q.courseType, sort_order: i }));
+      const payload = { student_name: user.full_name, stream, courses };
+      onCreated?.({ payload, isFull: false, existingCaseId }, pendingFiles);
+      return;
+    }
+
+    // Keys (same "0:coe" / "case:current_visa" shape as pendingFiles) whose
+    // extraction hadn't resolved yet at the moment Save was clicked -- the
+    // review screen re-checks exactly these (it still has the same File
+    // objects, via pendingFiles) and shows them as loading in the meantime,
+    // rather than showing a possibly-wrong "not detected" for something
+    // that just hasn't had time to finish yet.
+    const pendingExtractionKeys = [];
+
+    const courses = qualifications.map((q, i) => {
+      const cl = q.extracted?.completion_letter || {};
+      const coe = q.extracted?.coe || {};
+      if (q.files.completion_letter && q.extracted?.completion_letter === undefined) pendingExtractionKeys.push(`${i}:completion_letter`);
+      if (q.files.coe && q.extracted?.coe === undefined) pendingExtractionKeys.push(`${i}:coe`);
+      const documents = DOC_FIELDS.filter((field) => q.files[field.key]).map((field) => ({
+        doc_type: field.key,
+        file_name: `${labels[i]} - ${field.label}${EXTENSION_FOR_TYPE[q.files[field.key].type] || ""}`,
+        mime_type: q.files[field.key].type,
+      }));
+      return {
+        name: labels[i],
+        course_type: q.courseType,
+        start_date: cl.start_date || null,
+        end_date: cl.end_date || null,
+        cricos_code: coe.cricos_code || null,
+        cricos_weeks: coe.cricos_weeks ?? null,
+        sort_order: i,
+        documents,
+      };
+    });
+
+    const caseDocuments = CASE_DOC_FIELDS.filter((field) => caseFiles[field.key]).map((field) => ({
+      doc_type: field.key,
+      file_name: `${field.label}${EXTENSION_FOR_TYPE[caseFiles[field.key].type] || ""}`,
+      mime_type: caseFiles[field.key].type,
+    }));
+    CASE_DOC_FIELDS.forEach((field) => {
+      if (caseFiles[field.key] && caseExtracted[field.key] === undefined) pendingExtractionKeys.push(`case:${field.key}`);
+    });
+    const visa = caseExtracted.current_visa || {};
+    const pte = caseExtracted.pte || {};
+    const ovhc = caseExtracted.ovhc || {};
+    const afp = caseExtracted.afp_certificate || {};
+    const afpReceipt = caseExtracted.afp_receipt || {};
+    const newCoe = caseExtracted.new_coe || {};
+
+    const payload = {
+      student_name: user.full_name,
+      stream,
+      courses,
+      case_documents: caseDocuments,
+      visa_subclass: visa.visa_subclass || null,
+      visa_length_of_stay_date: visa.visa_length_of_stay_date || null,
+      pte_valid_until_date: pte.pte_valid_until_date || null,
+      ovhc_relevant_date: ovhc.ovhc_relevant_date || null,
+      afp_issue_date: afp.afp_issue_date || afpReceipt.afp_issue_date || null,
+      new_coe_start_date: newCoe.new_coe_start_date || null,
+    };
+    onCreated?.({ payload, isFull: true, existingCaseId: null, pendingExtractionKeys }, pendingFiles);
   }
 
   const allowedCourseTypes = STREAMS.find((item) => item.value === stream).courseTypes;

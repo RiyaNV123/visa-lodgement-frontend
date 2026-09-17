@@ -5,6 +5,7 @@ import AppShell from "../components/AppShell.jsx";
 import DocUploadSlot from "../components/DocUploadSlot.jsx";
 import Spinner, { PageLoader } from "../components/Spinner.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import { extractPreview } from "../utils/extractPreview.js";
 
 const STREAM_LABEL = { vocational: "Post Vocational 485", higher: "Post Higher 485" };
 
@@ -49,6 +50,25 @@ function weeksBetween(start, end) {
   return Math.round(ms / (1000 * 60 * 60 * 24 * 7));
 }
 
+// Collapsed by default -- the detailed breakdown tables were making every
+// result column feel crowded the moment a check resolved. Native <details>
+// so it needs no extra state, and reads as a familiar "tap to expand"
+// disclosure (same idea as opening a comment thread) rather than a wall of
+// tables the student has to scroll past just to see the verdict above it.
+function CalculationDetailsToggle({ children }) {
+  return (
+    <details className="group mt-4">
+      <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-bold text-[#002d48] [&::-webkit-details-marker]:hidden">
+        <span className="material-symbols-outlined text-[16px] transition-transform duration-150 group-open:rotate-90">
+          chevron_right
+        </span>
+        Calculation Details
+      </summary>
+      <div className="mt-3 space-y-4">{children}</div>
+    </details>
+  );
+}
+
 const DOC_SLOTS = [
   { doc_type: "coe", label: "CoE", required: false },
   { doc_type: "completion_letter", label: "Completion Letter", required: true },
@@ -63,6 +83,165 @@ const CASE_DOC_SLOTS = [
   { doc_type: "pte", label: "PTE", required: true },
   { doc_type: "ovhc", label: "OVHC", required: true },
 ];
+
+// One attribute/value table per document -- e.g. Current Visa gets two rows
+// (Type, Expiry), AFP gets one (Date), a qualification gets four (Start
+// Date, End Date, CRICOS Code, CRICOS Weeks). Same table styling already
+// used for every other "Calculation Details" breakdown in this app (see the
+// results grid below), so this reads as one consistent design, not a
+// one-off.
+function ReviewDocTable({ label, attached, loading, rows }) {
+  return (
+    <div className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+      <p className="text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
+      {!attached ? (
+        <p className="mt-1 text-xs text-[#72777e]">Not attached</p>
+      ) : (
+        <table className="mt-2 w-full text-left text-xs">
+          <tbody className="text-[#1a1c1a]">
+            {rows.map((row) => (
+              <tr key={row.attribute} className="border-t border-[#c2c7ce]/40 first:border-t-0">
+                <td className="py-1.5 pr-2 text-[#72777e]">{row.attribute}</td>
+                <td className="py-1.5 font-semibold">{loading ? "Reading document…" : row.value || "Not detected"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// Shown right after Save, before any eligibility check runs -- reads
+// straight from the payload the student just submitted (see CaseNew.jsx's
+// handleSubmit), which already carries whatever extract-preview found for
+// each document. No backend call needed to render this: the case is being
+// created in the background at the same time, so this gives the student
+// something real to check immediately instead of a wait. Clicking Next only
+// flips a local flag (see reviewConfirmed in CaseDetail); the actual
+// eligibility check waits for both that click and the case actually
+// existing, whichever comes last.
+//
+// A file whose extraction hadn't resolved yet when Save was clicked shows
+// as "Reading document…" here (via pendingExtractionKeys/pendingResults --
+// see the re-check effect in CaseDetail) instead of a possibly-wrong "not
+// detected" -- once it resolves, this re-renders with the real value.
+function ExtractedDetailsReview({ payload, onNext, pendingExtractionKeys, pendingResults }) {
+  const attachedCaseDocTypes = new Set((payload.case_documents || []).map((d) => d.doc_type));
+  const isPending = (key) => pendingExtractionKeys.includes(key) && !pendingResults[key];
+  const afpKeyAttached = attachedCaseDocTypes.has("afp_certificate") ? "case:afp_certificate" : "case:afp_receipt";
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="font-headline text-2xl font-bold text-[#002d48]">Here's what we found</p>
+        <p className="mt-2 text-sm font-medium text-[#42474d]">
+          We've pulled these details out of the documents you attached — take a moment to check them over. Your case
+          is being saved in the background, so results will be ready shortly after you continue.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {payload.courses.map((course, index) => {
+          const clKey = `${index}:completion_letter`;
+          const coeKey = `${index}:coe`;
+          const clResult = pendingResults[clKey];
+          const coeResult = pendingResults[coeKey];
+          const startDate = clResult ? clResult.start_date : course.start_date;
+          const endDate = clResult ? clResult.end_date : course.end_date;
+          const cricosCode = coeResult ? coeResult.cricos_code : course.cricos_code;
+          const cricosWeeks = coeResult ? coeResult.cricos_weeks : course.cricos_weeks;
+          const datesLoading = isPending(clKey);
+          const cricosLoading = isPending(coeKey);
+          return (
+            <div key={index} className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+              <div className="flex items-center justify-between">
+                <p className="font-headline text-lg font-bold text-[#002d48]">{course.name}</p>
+                <span className="rounded-full bg-[#f4f3f1] px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#5f6670]">
+                  {course.course_type}
+                </span>
+              </div>
+              <table className="mt-3 w-full text-left text-xs">
+                <tbody className="text-[#1a1c1a]">
+                  <tr>
+                    <td className="py-1.5 pr-2 text-[#72777e]">Start Date</td>
+                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : startDate || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">End Date</td>
+                    <td className="py-1.5 font-semibold">{datesLoading ? "Reading document…" : endDate || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Code</td>
+                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosCode || "Not detected"}</td>
+                  </tr>
+                  <tr className="border-t border-[#c2c7ce]/40">
+                    <td className="py-1.5 pr-2 text-[#72777e]">CRICOS Weeks</td>
+                    <td className="py-1.5 font-semibold">{cricosLoading ? "Reading document…" : cricosWeeks ?? "Not detected"}</td>
+                  </tr>
+                </tbody>
+              </table>
+              {!datesLoading && !cricosLoading && (!startDate || !endDate || !cricosCode) && (
+                <p className="mt-2 text-xs text-[#8a5b00]">
+                  Some details weren't picked up automatically — that's fine, an admin can add them by hand.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-xl bg-white p-5 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+        <p className="font-headline text-lg font-bold text-[#002d48]">Additional Documents</p>
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <ReviewDocTable
+            label="Current Visa"
+            attached={attachedCaseDocTypes.has("current_visa")}
+            loading={isPending("case:current_visa")}
+            rows={[
+              { attribute: "Type", value: payload.visa_subclass },
+              { attribute: "Expiry", value: payload.visa_length_of_stay_date },
+            ]}
+          />
+          <ReviewDocTable
+            label="PTE"
+            attached={attachedCaseDocTypes.has("pte")}
+            loading={isPending("case:pte")}
+            rows={[{ attribute: "Valid Date", value: payload.pte_valid_until_date }]}
+          />
+          <ReviewDocTable
+            label="OVHC"
+            attached={attachedCaseDocTypes.has("ovhc")}
+            loading={isPending("case:ovhc")}
+            rows={[{ attribute: "Valid Date", value: payload.ovhc_relevant_date }]}
+          />
+          <ReviewDocTable
+            label="AFP (Certificate or Receipt)"
+            attached={attachedCaseDocTypes.has("afp_certificate") || attachedCaseDocTypes.has("afp_receipt")}
+            loading={isPending(afpKeyAttached)}
+            rows={[{ attribute: "Valid Date", value: payload.afp_issue_date }]}
+          />
+          {attachedCaseDocTypes.has("new_coe") && (
+            <ReviewDocTable
+              label="New CoE"
+              attached
+              loading={isPending("case:new_coe")}
+              rows={[{ attribute: "Valid Date", value: payload.new_coe_start_date }]}
+            />
+          )}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={onNext}
+        className="w-full rounded-lg bg-[#002d48] px-6 py-3 text-sm font-bold font-headline text-white shadow-sm hover:bg-[#004384] sm:w-auto"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
 
 // Placeholder case shown the instant the qualifications screen hands off --
 // the real case doesn't exist on the server yet (that's created in the
@@ -133,6 +312,21 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // admin's view (which ignores `step` entirely -- see showQualifications/
   // showAdditional below) keeps working unchanged.
   const [step] = useState("submitted"); // "qualifications" | "additional" | "submitted"
+  // Gates the results screen behind a "here's what we found" review step,
+  // shown only right after a brand-new case is created (isFull) -- not on a
+  // later revisit (no pendingCreate then), and not for a stream-change
+  // (extraction isn't collected for that flow). Reading straight from
+  // pendingCreate.payload -- the exact data the student already
+  // provided -- means this can render instantly, with no wait of its own;
+  // the real case-creation work keeps happening in the background while
+  // they read it, so clicking Next often finds it already done.
+  const [reviewConfirmed, setReviewConfirmed] = useState(!pendingCreate || !pendingCreate.isFull);
+  // Keyed the same as pendingFiles ("0:completion_letter", "case:pte", ...) --
+  // holds the re-checked extract-preview result for any file whose first
+  // attempt (fired back on the qualifications screen) hadn't resolved yet
+  // by the time Save was clicked. See the effect below and
+  // ExtractedDetailsReview's isPending.
+  const [pendingExtractionResults, setPendingExtractionResults] = useState({});
   const caseCreationStarted = useRef(false);
   const autoCheckStarted = useRef(false);
 
@@ -306,16 +500,65 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     }
   }
 
+  // Uploads a document's already-known bytes to S3 using the document id
+  // create_case_full just created -- genuinely zero Sheets calls per file
+  // (see PUT /cases/{id}/documents/{id}/content), unlike uploadFiles above.
+  // Passes each document's own s3_key/mime_type (captured back in
+  // adoptFullyCreatedCase, straight from create-full's response) along with
+  // the file, so the endpoint never has to look them up itself. Same
+  // background/non-blocking/batched shape as uploadFiles, just against
+  // documents that already exist instead of ones still needing to be
+  // created.
+  async function uploadDocumentContents(filesByDocumentId, caseId) {
+    const uploads = Object.entries(filesByDocumentId).filter(([key]) => !inFlightKeysRef.current.has(key));
+    if (!uploads.length) return;
+    uploads.forEach(([key]) => inFlightKeysRef.current.add(key));
+    setActionError("");
+    try {
+      const results = await Promise.allSettled(
+        uploads.map(([documentId, { file, s3Key, mimeType }]) => {
+          const form = new FormData();
+          form.append("file", file);
+          form.append("s3_key", s3Key);
+          form.append("mime_type", mimeType);
+          return client.put(`/cases/${caseId}/documents/${documentId}/content`, form, { headers: { "Content-Type": "multipart/form-data" } }).then(() => documentId);
+        })
+      );
+      const succeededKeys = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+      const failures = results.filter((r) => r.status === "rejected");
+      if (succeededKeys.length) {
+        setPendingFiles((current) => {
+          const next = { ...current };
+          succeededKeys.forEach((key) => delete next[key]);
+          return next;
+        });
+      }
+      await refreshCaseData(caseId);
+      if (failures.length) {
+        setActionError(errorMessage(failures[0].reason, "Could not save one or more documents. Please try again."));
+      }
+    } finally {
+      uploads.forEach(([key]) => inFlightKeysRef.current.delete(key));
+    }
+  }
+
   // Creates the case itself in the background -- the slow part is the same
   // Sheets round-trip that used to block the qualifications screen, but now
   // it happens while the student is already looking at, and can act on, this
-  // fully-rendered screen. Re-keys any pending files from their placeholder
-  // (position-based) course id to the real one once the case (and its real
-  // course ids) exist, then kicks off their upload.
+  // fully-rendered screen. A brand-new case (isFull) goes through
+  // create-full -- one batched call creates the case, every course, and
+  // every document's metadata together (see create_case_full in
+  // cases_router.py); changing stream on an existing case still goes
+  // through the older replace flow, unchanged.
   async function createCase() {
     setCreatingError("");
+    const { payload, existingCaseId, isFull } = pendingCreate;
     try {
-      const { payload, existingCaseId } = pendingCreate;
+      if (isFull) {
+        const res = await client.post("/cases/create-full", payload);
+        adoptFullyCreatedCase(res.data, payload);
+        return;
+      }
       const res = existingCaseId
         ? await client.put(`/cases/${existingCaseId}/replace`, payload)
         : await client.post("/cases", payload);
@@ -326,13 +569,23 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
         // second attempt (e.g. the student reloaded the page) landing after
         // the first one already succeeded in the background. Recover by
         // adopting whatever case now exists instead of leaving the student
-        // stuck on an error that retrying can never get past.
+        // stuck on an error that retrying can never get past. For the
+        // isFull path there's no reliable way to re-match this attempt's
+        // pending files against the earlier attempt's already-created
+        // document ids, so this just shows the case as it already is --
+        // the earlier attempt's documents are already there.
         try {
           const existing = await client.get("/cases");
           const ownCase = existing.data[0];
           if (ownCase) {
             const full = await client.get(`/cases/${ownCase.id}`);
-            adoptCreatedCase(full.data);
+            if (isFull) {
+              setCaseData(full.data);
+              setPendingFiles({});
+              setCreatingCase(false);
+            } else {
+              adoptCreatedCase(full.data);
+            }
             return;
           }
         } catch {
@@ -367,12 +620,74 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     }
   }
 
+  // create-full already created every document's metadata (see
+  // create_case_full in cases_router.py) -- this just needs to match each
+  // pending file to the document id it was created as, then upload its
+  // actual bytes. The match is positional: `sentPayload` and `created` both
+  // list courses/documents in the exact same order (neither side reorders
+  // or filters differently), so zipping sentPayload's manifest against
+  // created's real ids is exact, not a guess.
+  function adoptFullyCreatedCase(created, sentPayload) {
+    // Carries each created document's own s3_key/mime_type along, keyed by
+    // its id -- uploadDocumentContents passes these straight through, so
+    // that endpoint never needs to look them up from the Sheet itself (see
+    // upload_document_content in cases_router.py).
+    const createdDocByPendingKey = {};
+    sentPayload.courses.forEach((course, i) => {
+      const createdCourse = created.courses[i];
+      course.documents.forEach((doc, j) => {
+        const createdDoc = createdCourse?.documents?.[j];
+        if (createdDoc) createdDocByPendingKey[`${i}:${doc.doc_type}`] = createdDoc;
+      });
+    });
+    (sentPayload.case_documents || []).forEach((doc, j) => {
+      const createdDoc = created.documents?.[j];
+      if (createdDoc) createdDocByPendingKey[`case:${doc.doc_type}`] = createdDoc;
+    });
+
+    const rekeyed = {};
+    Object.entries(pendingFilesRef.current).forEach(([key, file]) => {
+      const createdDoc = createdDocByPendingKey[key];
+      if (createdDoc) rekeyed[createdDoc.id] = { file, s3Key: createdDoc.s3_key, mimeType: createdDoc.mime_type };
+    });
+
+    setCaseData(created);
+    setPendingFiles(Object.fromEntries(Object.entries(rekeyed).map(([id, { file }]) => [id, file])));
+    setCreatingCase(false);
+    if (Object.keys(rekeyed).length) {
+      uploadDocumentContents(rekeyed, created.id);
+    }
+  }
+
   useEffect(() => {
     if (!pendingCreate || caseCreationStarted.current) return;
     caseCreationStarted.current = true;
     createCase();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCreate]);
+
+  // Re-checks extraction for any file whose first attempt (fired back on
+  // the qualifications screen, before Save) hadn't resolved yet -- this
+  // screen still has the same File objects via pendingFiles/
+  // initialPendingFiles, so it just runs the same stateless check again.
+  // Purely for the review screen's own display: create-full already went
+  // out with whatever was known at Save time, and self-healing during
+  // run-checks independently fills in anything still missing server-side
+  // -- this doesn't feed back into what gets submitted, it only replaces
+  // a premature "not detected" with the real value once it's in.
+  useEffect(() => {
+    const keys = pendingCreate?.pendingExtractionKeys;
+    if (!keys?.length) return;
+    keys.forEach((key) => {
+      const file = initialPendingFiles?.[key];
+      if (!file) return;
+      const [, docType] = key.split(":");
+      extractPreview(docType, file).then((result) => {
+        setPendingExtractionResults((prev) => ({ ...prev, [key]: result }));
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Triggers all three cascading checks (qualification/CRICOS duration,
   // document validity, lodgement date) in one backend call -- the backend
@@ -439,7 +754,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
   // validity only once qualification is eligible, lodgement date only once
   // both are) now lives entirely in the single runChecks call/endpoint.
   useEffect(() => {
-    if (isAdmin || !caseData?.id || autoCheckStarted.current) return;
+    if (isAdmin || !caseData?.id || !reviewConfirmed || autoCheckStarted.current) return;
     // "pending" keeps retrying on every visit (a genuine, possibly-fixable
     // data gap -- e.g. a document the student hasn't added yet); "eligible"
     // and "not_eligible" are final verdicts that only need a run once, to
@@ -451,7 +766,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
     autoCheckStarted.current = true;
     runChecks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, caseData?.id]);
+  }, [isAdmin, caseData?.id, reviewConfirmed]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -488,7 +803,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
 
   const showQualifications = isAdmin || step === "qualifications";
   const showAdditional = isAdmin || step === "additional";
-  const showSubmitted = !isAdmin && step === "submitted";
+  const showReview = !isAdmin && step === "submitted" && !reviewConfirmed;
+  const showSubmitted = !isAdmin && step === "submitted" && reviewConfirmed;
 
   return (
     <AppShell>
@@ -616,6 +932,15 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
           </div>
         )}
 
+        {showReview && (
+          <ExtractedDetailsReview
+            payload={pendingCreate.payload}
+            onNext={() => setReviewConfirmed(true)}
+            pendingExtractionKeys={pendingCreate.pendingExtractionKeys || []}
+            pendingResults={pendingExtractionResults}
+          />
+        )}
+
         {showSubmitted && (
           <div>
             <p className="font-headline text-2xl font-bold text-[#002d48]">You're all set</p>
@@ -659,9 +984,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.duration_breakdown && (
-                      <div className="mt-4 space-y-4">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-
+                      <CalculationDetailsToggle>
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
                             Dates extracted from documents
@@ -723,7 +1046,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                           {" "}/ Min required:{" "}
                           <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
                 </div>
@@ -760,9 +1083,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.document_validity_breakdown && (
-                      <div className="mt-4">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-                        <div className="mt-3 overflow-x-auto">
+                      <CalculationDetailsToggle>
+                        <div className="overflow-x-auto">
                           <table className="w-full min-w-[420px] text-left text-xs">
                             <thead>
                               <tr className="text-[#72777e]">
@@ -786,7 +1108,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                             </tbody>
                           </table>
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
                 </div>
@@ -841,8 +1163,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.lodgement_breakdown && (
-                      <div className="mt-4 space-y-3">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                      <CalculationDetailsToggle>
                         <p className="text-xs text-[#42474d]">
                           Latest completion date:{" "}
                           <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.latest_completion_date || "—"}</span>.
@@ -869,7 +1190,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                             </tbody>
                           </table>
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
               </div>
