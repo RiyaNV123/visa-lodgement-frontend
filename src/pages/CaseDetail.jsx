@@ -50,6 +50,25 @@ function weeksBetween(start, end) {
   return Math.round(ms / (1000 * 60 * 60 * 24 * 7));
 }
 
+// Collapsed by default -- the detailed breakdown tables were making every
+// result column feel crowded the moment a check resolved. Native <details>
+// so it needs no extra state, and reads as a familiar "tap to expand"
+// disclosure (same idea as opening a comment thread) rather than a wall of
+// tables the student has to scroll past just to see the verdict above it.
+function CalculationDetailsToggle({ children }) {
+  return (
+    <details className="group mt-4">
+      <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-bold text-[#002d48] [&::-webkit-details-marker]:hidden">
+        <span className="material-symbols-outlined text-[16px] transition-transform duration-150 group-open:rotate-90">
+          chevron_right
+        </span>
+        Calculation Details
+      </summary>
+      <div className="mt-3 space-y-4">{children}</div>
+    </details>
+  );
+}
+
 const DOC_SLOTS = [
   { doc_type: "coe", label: "CoE", required: false },
   { doc_type: "completion_letter", label: "Completion Letter", required: true },
@@ -965,9 +984,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.duration_breakdown && (
-                      <div className="mt-4 space-y-4">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-
+                      <CalculationDetailsToggle>
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
                             Dates extracted from documents
@@ -1029,7 +1046,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                           {" "}/ Min required:{" "}
                           <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
                 </div>
@@ -1066,9 +1083,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.document_validity_breakdown && (
-                      <div className="mt-4">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
-                        <div className="mt-3 overflow-x-auto">
+                      <CalculationDetailsToggle>
+                        <div className="overflow-x-auto">
                           <table className="w-full min-w-[420px] text-left text-xs">
                             <thead>
                               <tr className="text-[#72777e]">
@@ -1092,7 +1108,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                             </tbody>
                           </table>
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
                 </div>
@@ -1147,8 +1163,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                     </div>
 
                     {caseData.lodgement_breakdown && (
-                      <div className="mt-4 space-y-3">
-                        <p className="text-xs font-bold text-[#002d48]">Calculation Details</p>
+                      <CalculationDetailsToggle>
                         <p className="text-xs text-[#42474d]">
                           Latest completion date:{" "}
                           <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.latest_completion_date || "—"}</span>.
@@ -1175,7 +1190,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                             </tbody>
                           </table>
                         </div>
-                      </div>
+                      </CalculationDetailsToggle>
                     )}
                   </>
               </div>
