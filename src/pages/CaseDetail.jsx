@@ -57,7 +57,7 @@ function weeksBetween(start, end) {
 // tables the student has to scroll past just to see the verdict above it.
 function CalculationDetailsToggle({ children }) {
   return (
-    <details className="group mt-4">
+    <details className="group mt-auto pt-4">
       <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-bold text-[#002d48] [&::-webkit-details-marker]:hidden">
         <span className="material-symbols-outlined text-[16px] transition-transform duration-150 group-open:rotate-90">
           chevron_right
@@ -67,6 +67,32 @@ function CalculationDetailsToggle({ children }) {
       <div className="mt-3 space-y-4">{children}</div>
     </details>
   );
+}
+
+// Small outlined tag for a check's verdict -- replaces the old full-width
+// colored block. Only three labels ever shown, regardless of the status
+// field's exact wording, so every result column reads the same vocabulary.
+function StatusBadge({ status }) {
+  const styles =
+    status === "eligible"
+      ? "border-[#126b2f] text-[#126b2f]"
+      : status === "not_eligible"
+      ? "border-[#b42318] text-[#b42318]"
+      : "border-[#8a5b00] text-[#8a5b00]";
+  const text = status === "eligible" ? "Eligible" : status === "not_eligible" ? "Not Eligible" : "Pending";
+  return (
+    <span className={`inline-block rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${styles}`}>
+      {text}
+    </span>
+  );
+}
+
+// Reason text, shown just below a StatusBadge -- colored text only (no
+// filled box), so it reads as a caption rather than a callout banner.
+function StatusMessage({ status, children }) {
+  const color =
+    status === "eligible" ? "text-[#126b2f]" : status === "not_eligible" ? "text-[#b42318]" : "text-[#8a5b00]";
+  return <p className={`mt-3 text-[13px] font-semibold leading-relaxed ${color}`}>{children}</p>;
 }
 
 const DOC_SLOTS = [
@@ -948,39 +974,31 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
               Your documents have been submitted, and every check below runs automatically.
             </p>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="mt-6 rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
+            <div className="grid grid-cols-1 divide-y divide-[#c2c7ce]/40 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
               {/* Column 1: Qualification check -- only rendered once it has
                   resolved; while loading, the shared panel below takes its
                   place instead of a per-column loader. */}
               {!eligibilityLoading && (
-                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
+                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
                   <>
-                    <div
-                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                        caseData.eligibility_status === "eligible"
-                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                          : caseData.eligibility_status === "not_eligible"
-                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                      }`}
-                    >
-                      {caseData.eligibility_status === "eligible" && (
-                        <p>
-                          Meets the required study duration.
-                          {isAdmin && caseData.total_duration_weeks != null && ` (${caseData.total_duration_weeks} credited weeks)`}
-                        </p>
-                      )}
-                      {caseData.eligibility_status === "not_eligible" && (
-                        <p>Not eligible.{caseData.eligibility_reason && ` ${caseData.eligibility_reason}`}</p>
-                      )}
-                      {caseData.eligibility_status === "pending" && (
-                        <p>
-                          {caseData.eligibility_reason
+                    <div className="mt-3">
+                      <StatusBadge status={caseData.eligibility_status} />
+                      <StatusMessage status={caseData.eligibility_status}>
+                        {caseData.eligibility_status === "eligible" && (
+                          <>
+                            Meets the required study duration.
+                            {isAdmin && caseData.total_duration_weeks != null && ` (${caseData.total_duration_weeks} credited weeks)`}
+                          </>
+                        )}
+                        {caseData.eligibility_status === "not_eligible" &&
+                          `Not eligible.${caseData.eligibility_reason ? ` ${caseData.eligibility_reason}` : ""}`}
+                        {caseData.eligibility_status === "pending" &&
+                          (caseData.eligibility_reason
                             ? `Couldn't fully check eligibility yet: ${caseData.eligibility_reason}`
-                            : "Eligibility hasn't been checked yet."}
-                        </p>
-                      )}
+                            : "Eligibility hasn't been checked yet.")}
+                      </StatusMessage>
                     </div>
 
                     {caseData.duration_breakdown && (
@@ -1057,29 +1075,20 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                   button below and the backend's own gate); only rendered
                   once resolved, same reasoning as Column 1. */}
               {!documentValidityLoading && (
-                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
+                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
                   <>
-                    <div
-                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                        caseData.document_validity_status === "eligible"
-                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                          : caseData.document_validity_status === "not_eligible"
-                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                      }`}
-                    >
-                      {caseData.document_validity_status === "eligible" && <p>Current Visa, PTE, OVHC, and AFP are all valid.</p>}
-                      {caseData.document_validity_status === "not_eligible" && (
-                        <p>Not valid.{caseData.document_validity_reason && ` ${caseData.document_validity_reason}`}</p>
-                      )}
-                      {caseData.document_validity_status === "pending" && (
-                        <p>
-                          {caseData.document_validity_reason
+                    <div className="mt-3">
+                      <StatusBadge status={caseData.document_validity_status} />
+                      <StatusMessage status={caseData.document_validity_status}>
+                        {caseData.document_validity_status === "eligible" && "Current Visa, PTE, OVHC, and AFP are all valid."}
+                        {caseData.document_validity_status === "not_eligible" &&
+                          `Not valid.${caseData.document_validity_reason ? ` ${caseData.document_validity_reason}` : ""}`}
+                        {caseData.document_validity_status === "pending" &&
+                          (caseData.document_validity_reason
                             ? `Couldn't fully check document validity yet: ${caseData.document_validity_reason}`
-                            : "Document validity hasn't been checked yet."}
-                        </p>
-                      )}
+                            : "Document validity hasn't been checked yet.")}
+                      </StatusMessage>
                     </div>
 
                     {caseData.document_validity_breakdown && (
@@ -1120,46 +1129,26 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                   currently valid, means nothing); only rendered once
                   resolved, same reasoning as the other two columns. */}
               {!lodgementLoading && (
-                <div className="flex flex-col rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
-
-                  <div className="mt-3">
-                  <DocUploadSlot
-                    label="New CoE"
-                    required={false}
-                    document={caseData.documents.find((d) => d.doc_type === "new_coe")}
-                    pendingFile={pendingFiles["case:new_coe"]}
-                    onSelectFile={selectNewCoeDocument}
-                    onRemovePendingFile={() => removeCaseDocument("new_coe")}
-                  />
-                </div>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
+                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
 
                 <>
-                    <div
-                      className={`mt-3 rounded-lg border-l-4 p-4 text-sm ${
-                        caseData.lodgement_date_status === "eligible"
-                          ? "border-[#2d5fa1] bg-[#eaf1fb] font-bold text-[#2d5fa1]"
-                          : caseData.lodgement_date_status === "not_eligible"
-                          ? "border-[#b42318] bg-[#fde8e8] font-bold text-[#b42318]"
-                          : "border-[#ff8f37] bg-[#e9e8e5] font-medium text-[#42474d]"
-                      }`}
-                    >
-                      {caseData.lodgement_date_status === "eligible" && (
-                        <p>
-                          Lodgement date: {caseData.lodgement_date}.
-                          {caseData.lodgement_basis && ` ${caseData.lodgement_basis}.`}
-                        </p>
-                      )}
-                      {caseData.lodgement_date_status === "not_eligible" && (
-                        <p>Not eligible to lodge.{caseData.lodgement_date_reason && ` ${caseData.lodgement_date_reason}`}</p>
-                      )}
-                      {caseData.lodgement_date_status === "pending" && (
-                        <p>
-                          {caseData.lodgement_date_reason
+                    <div className="mt-3">
+                      <StatusBadge status={caseData.lodgement_date_status} />
+                      <StatusMessage status={caseData.lodgement_date_status}>
+                        {caseData.lodgement_date_status === "eligible" && (
+                          <>
+                            Lodgement date: {caseData.lodgement_date}.
+                            {caseData.lodgement_basis && ` ${caseData.lodgement_basis}.`}
+                          </>
+                        )}
+                        {caseData.lodgement_date_status === "not_eligible" &&
+                          `Not eligible to lodge.${caseData.lodgement_date_reason ? ` ${caseData.lodgement_date_reason}` : ""}`}
+                        {caseData.lodgement_date_status === "pending" &&
+                          (caseData.lodgement_date_reason
                             ? `Couldn't calculate the lodgement date yet: ${caseData.lodgement_date_reason}`
-                            : "Lodgement date hasn't been calculated yet."}
-                        </p>
-                      )}
+                            : "Lodgement date hasn't been calculated yet.")}
+                      </StatusMessage>
                     </div>
 
                     {caseData.lodgement_breakdown && (
@@ -1196,6 +1185,7 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
               </div>
               )}
               {anyColumnLoading && <SharedLoadingPanel span={loadingSpan} messageIndex={loadingMessageIndex} />}
+            </div>
             </div>
           </div>
         )}
