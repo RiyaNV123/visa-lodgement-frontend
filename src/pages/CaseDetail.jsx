@@ -119,7 +119,7 @@ const CASE_DOC_SLOTS = [
 function ReviewDocTable({ label, attached, loading, rows }) {
   return (
     <div className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
-      <p className="border-b-2 border-[#002d48]/30 pb-1.5 text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
+      <p className="text-sm font-semibold font-label text-[#1a1c1a]">{label}</p>
       {!attached ? (
         <p className="mt-1 text-xs text-[#72777e]">Not attached</p>
       ) : (
@@ -975,13 +975,13 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
             </p>
 
             <div className="mt-6 rounded-xl bg-white p-6 shadow-[0px_20px_40px_rgba(27,67,97,0.06)]">
-            <div className="grid grid-cols-1 divide-y divide-[#c2c7ce]/40 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
+            <div className="grid grid-cols-1 items-start divide-y divide-[#c2c7ce]/40 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
               {/* Column 1: Qualification check -- only rendered once it has
                   resolved; while loading, the shared panel below takes its
                   place instead of a per-column loader. */}
               {!eligibilityLoading && (
-                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
-                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8">
+                  <p className="min-h-[32px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Qualification Check</p>
                   <>
                     <div className="mt-3">
                       <StatusBadge status={caseData.eligibility_status} />
@@ -1007,62 +1007,68 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                           <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">
                             Dates extracted from documents
                           </p>
-                          <div className="mt-2 overflow-x-auto">
-                            <table className="w-full min-w-[420px] text-left text-xs">
-                              <thead>
-                                <tr className="text-[#72777e]">
-                                  <th className="pb-1 pr-2 font-semibold">Course</th>
-                                  <th className="pb-1 pr-2 font-semibold">Start</th>
-                                  <th className="pb-1 pr-2 font-semibold">End</th>
-                                  <th className="pb-1 pr-2 font-semibold">Actual wks</th>
-                                  <th className="pb-1 font-semibold">CRICOS wks</th>
-                                </tr>
-                              </thead>
-                              <tbody className="text-[#1a1c1a]">
-                                {caseData.courses.map((course) => (
-                                  <tr key={course.id} className="border-t border-[#c2c7ce]/40">
-                                    <td className="py-1.5 pr-2">{course.name}</td>
-                                    <td className="py-1.5 pr-2">{course.start_date || "—"}</td>
-                                    <td className="py-1.5 pr-2">{course.end_date || "—"}</td>
-                                    <td className="py-1.5 pr-2">{weeksBetween(course.start_date, course.end_date) ?? "—"}</td>
-                                    <td className="py-1.5">{course.cricos_weeks ?? "—"}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                          <div className="mt-2 space-y-2">
+                            {caseData.courses.map((course) => (
+                              <div key={course.id} className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+                                <p className="text-xs font-semibold text-[#1a1c1a]">{course.name}</p>
+                                <table className="mt-1 w-full text-left text-xs">
+                                  <tbody className="text-[#1a1c1a]">
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">Start</td>
+                                      <td className="py-1 text-right font-semibold">{course.start_date || "—"}</td>
+                                    </tr>
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">End</td>
+                                      <td className="py-1 text-right font-semibold">{course.end_date || "—"}</td>
+                                    </tr>
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">Actual weeks</td>
+                                      <td className="py-1 text-right font-semibold">
+                                        {weeksBetween(course.start_date, course.end_date) ?? "—"}
+                                      </td>
+                                    </tr>
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">CRICOS weeks</td>
+                                      <td className="py-1 text-right font-semibold">{course.cricos_weeks ?? "—"}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            ))}
                           </div>
                         </div>
 
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Credited weeks</p>
-                          <div className="mt-2 overflow-x-auto">
-                            <table className="w-full min-w-[420px] text-left text-xs">
-                              <thead>
-                                <tr className="text-[#72777e]">
-                                  <th className="pb-1 pr-2 font-semibold">Group</th>
-                                  <th className="pb-1 pr-2 font-semibold">Actual</th>
-                                  <th className="pb-1 pr-2 font-semibold">CRICOS</th>
-                                  <th className="pb-1 font-semibold">Credited</th>
-                                </tr>
-                              </thead>
-                              <tbody className="text-[#1a1c1a]">
-                                {caseData.duration_breakdown.groups.map((group) => (
-                                  <tr key={group.label} className="border-t border-[#c2c7ce]/40">
-                                    <td className="py-1.5 pr-2">{group.label}</td>
-                                    <td className="py-1.5 pr-2">{group.actual_weeks}</td>
-                                    <td className="py-1.5 pr-2">{group.required_weeks ?? "—"}</td>
-                                    <td className="py-1.5">{group.credited_weeks}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                          <div className="mt-2 space-y-2">
+                            {caseData.duration_breakdown.groups.map((group) => (
+                              <div key={group.label} className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+                                <p className="text-xs font-semibold text-[#1a1c1a]">{group.label}</p>
+                                <table className="mt-1 w-full text-left text-xs">
+                                  <tbody className="text-[#1a1c1a]">
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">Actual</td>
+                                      <td className="py-1 text-right font-semibold">{group.actual_weeks}</td>
+                                    </tr>
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">CRICOS</td>
+                                      <td className="py-1 text-right font-semibold">{group.required_weeks ?? "—"}</td>
+                                    </tr>
+                                    <tr>
+                                      <td className="py-1 pr-2 text-[#72777e]">Credited</td>
+                                      <td className="py-1 text-right font-semibold">{group.credited_weeks}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            ))}
                           </div>
                         </div>
 
                         <div className="rounded-lg bg-[#f4f3f1] px-3 py-2 text-xs font-medium text-[#42474d]">
-                          Total: <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.total_weeks}</span> wks
+                          Total: <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.total_weeks}</span> weeks
                           {" "}/ Min required:{" "}
-                          <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> wks
+                          <span className="font-bold text-[#1a1c1a]">{caseData.duration_breakdown.min_required_weeks}</span> weeks
                         </div>
                       </CalculationDetailsToggle>
                     )}
@@ -1075,8 +1081,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                   button below and the backend's own gate); only rendered
                   once resolved, same reasoning as Column 1. */}
               {!documentValidityLoading && (
-                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
-                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8">
+                  <p className="min-h-[32px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Document Validity Check</p>
                   <>
                     <div className="mt-3">
                       <StatusBadge status={caseData.document_validity_status} />
@@ -1093,29 +1099,26 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
 
                     {caseData.document_validity_breakdown && (
                       <CalculationDetailsToggle>
-                        <div className="overflow-x-auto">
-                          <table className="w-full min-w-[420px] text-left text-xs">
-                            <thead>
-                              <tr className="text-[#72777e]">
-                                <th className="pb-1 pr-2 font-semibold">Document</th>
-                                <th className="pb-1 font-semibold">Extracted</th>
-                              </tr>
-                            </thead>
-                            <tbody className="text-[#1a1c1a]">
-                              {caseData.document_validity_breakdown.checks.map((check) => (
-                                <tr key={check.label} className="border-t border-[#c2c7ce]/40">
-                                  <td className="py-1.5 pr-2">{check.label}</td>
-                                  <td className="py-1.5">
-                                    {Object.keys(check.extracted).length
-                                      ? Object.entries(check.extracted)
-                                          .map(([key, value]) => `${key.replace(/_/g, " ")}: ${value}`)
-                                          .join(", ")
-                                      : "—"}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                        <div className="space-y-2">
+                          {caseData.document_validity_breakdown.checks.map((check) => (
+                            <div key={check.label} className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+                              <p className="text-xs font-semibold text-[#1a1c1a]">{check.label}</p>
+                              {Object.keys(check.extracted).length ? (
+                                <table className="mt-1 w-full text-left text-xs">
+                                  <tbody className="text-[#1a1c1a]">
+                                    {Object.entries(check.extracted).map(([key, value]) => (
+                                      <tr key={key}>
+                                        <td className="py-1 pr-2 capitalize text-[#72777e]">{key.replace(/_/g, " ")}</td>
+                                        <td className="py-1 text-right font-semibold">{value}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <p className="mt-1 text-xs text-[#72777e]">—</p>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       </CalculationDetailsToggle>
                     )}
@@ -1129,8 +1132,8 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                   currently valid, means nothing); only rendered once
                   resolved, same reasoning as the other two columns. */}
               {!lodgementLoading && (
-                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8 lg:first:pl-0 lg:last:pr-0">
-                  <p className="min-h-[28px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
+                <div className="flex flex-col py-6 first:pt-0 last:pb-0 lg:py-0 lg:px-8">
+                  <p className="min-h-[32px] text-[10px] font-bold uppercase tracking-widest text-[#72777e]">Lodgement Date Calculation</p>
 
                 <>
                     <div className="mt-3">
@@ -1159,25 +1162,24 @@ export default function CaseDetail({ caseId, pendingCreate, initialPendingFiles 
                           {" "}Window ends:{" "}
                           <span className="font-bold text-[#1a1c1a]">{caseData.lodgement_breakdown.window_end || "—"}</span>.
                         </p>
-                        <div className="overflow-x-auto">
-                          <table className="w-full min-w-[420px] text-left text-xs">
-                            <thead>
-                              <tr className="text-[#72777e]">
-                                <th className="pb-1 pr-2 font-semibold">Factor</th>
-                                <th className="pb-1 pr-2 font-semibold">Date</th>
-                                <th className="pb-1 font-semibold">Considered?</th>
-                              </tr>
-                            </thead>
-                            <tbody className="text-[#1a1c1a]">
-                              {caseData.lodgement_breakdown.factors.map((factor) => (
-                                <tr key={factor.label} className="border-t border-[#c2c7ce]/40">
-                                  <td className="py-1.5 pr-2">{factor.label}</td>
-                                  <td className="py-1.5 pr-2">{factor.date || "—"}</td>
-                                  <td className="py-1.5">{factor.included ? "Yes" : "Excluded"}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                        <div className="space-y-2">
+                          {caseData.lodgement_breakdown.factors.map((factor) => (
+                            <div key={factor.label} className="rounded-lg border border-[#c2c7ce]/50 px-3 py-2.5">
+                              <p className="text-xs font-semibold text-[#1a1c1a]">{factor.label}</p>
+                              <table className="mt-1 w-full text-left text-xs">
+                                <tbody className="text-[#1a1c1a]">
+                                  <tr>
+                                    <td className="py-1 pr-2 text-[#72777e]">Date</td>
+                                    <td className="py-1 text-right font-semibold">{factor.date || "—"}</td>
+                                  </tr>
+                                  <tr>
+                                    <td className="py-1 pr-2 text-[#72777e]">Considered?</td>
+                                    <td className="py-1 text-right font-semibold">{factor.included ? "Yes" : "Excluded"}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          ))}
                         </div>
                       </CalculationDetailsToggle>
                     )}
